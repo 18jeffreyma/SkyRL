@@ -119,7 +119,10 @@ main() {
         exit 1
     fi
 
-    log_info "Runtime server ready at: ${runtime_url}"
+    # Read the clean runtime URL directly from file (avoid log contamination)
+    local clean_runtime_url
+    clean_runtime_url=$(cat "${SKYRL_COORD_DIR}/runtime_url.txt")
+    log_info "Runtime server ready at: ${clean_runtime_url}"
 
     # Read API key if available
     local api_key_file="${SKYRL_COORD_DIR}/runtime_api_key.txt"
@@ -130,23 +133,63 @@ main() {
     fi
 
     # Set the runtime URL for OpenHands
-    export SANDBOX_REMOTE_RUNTIME_API_URL="${runtime_url}"
-    log_info "Set SANDBOX_REMOTE_RUNTIME_API_URL=${runtime_url}"
+    export SANDBOX_REMOTE_RUNTIME_API_URL="${clean_runtime_url}"
+    log_info "Set SANDBOX_REMOTE_RUNTIME_API_URL=${clean_runtime_url}"
 
     # Change to skyrl-agent directory
     cd "${SKYRL_AGENT_DIR}"
 
     # Load environment file
-    local env_file="${SKYRL_AGENT_DIR}/.env"
-    if [[ -f "${env_file}" ]]; then
-        load_env_file "${env_file}"
+    local base_env_file="${SKYRL_AGENT_DIR}/.env"
+    local env_file="${SKYRL_COORD_DIR}/training.env"
+
+    # Create a combined env file with runtime URL and API key
+    # This ensures the environment variables are available to uv run subprocess
+    if [[ -f "${base_env_file}" ]]; then
+        cp "${base_env_file}" "${env_file}"
+    else
+        touch "${env_file}"
     fi
 
-    # Override with runtime URL from coordination
-    export SANDBOX_REMOTE_RUNTIME_API_URL="${runtime_url}"
+    # Add runtime URL to env file - read directly from file to avoid log contamination
+    local runtime_url_from_file
+    runtime_url_from_file=$(cat "${SKYRL_COORD_DIR}/runtime_url.txt")
+    echo "" >> "${env_file}"
+    echo "# Runtime configuration (added by verl_training.sbatch)" >> "${env_file}"
+    echo "SANDBOX_REMOTE_RUNTIME_API_URL=${runtime_url_from_file}" >> "${env_file}"
+
+    # Add API key if available
+    local api_key_file="${SKYRL_COORD_DIR}/runtime_api_key.txt"
+    if [[ -f "${api_key_file}" ]]; then
+        echo "ALLHANDS_API_KEY=$(cat "${api_key_file}")" >> "${env_file}"
+    fi
+
+    log_info "Created combined env file at ${env_file}"
+
+    # Load environment file
+    if [[ -f "${base_env_file}" ]]; then
+        load_env_file "${base_env_file}"
+    fi
+
+    # Override with runtime URL from coordination (use clean URL from file)
+    export SANDBOX_REMOTE_RUNTIME_API_URL="${clean_runtime_url}"
 
     # Set vLLM configuration
     export VLLM_USE_V1="${VLLM_USE_V1:-1}"
+
+    # Handle MIG GPU devices - vLLM requires integer device IDs
+    # SLURM may set CUDA_VISIBLE_DEVICES to MIG UUIDs like "MIG-xxx,MIG-yyy"
+    # Convert to sequential integers "0,1,..." for vLLM compatibility
+    if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+        if [[ "${CUDA_VISIBLE_DEVICES}" == *"MIG-"* ]]; then
+            local num_gpus
+            num_gpus=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
+            local new_devices
+            new_devices=$(seq -s',' 0 $((num_gpus - 1)))
+            log_info "MIG GPUs detected, remapping CUDA_VISIBLE_DEVICES from UUIDs to integers: ${new_devices}"
+            export CUDA_VISIBLE_DEVICES="${new_devices}"
+        fi
+    fi
 
     # Set up EFA networking if enabled
     setup_efa_networking
@@ -169,7 +212,7 @@ main() {
     # Run VERL training
     log_info "Starting VERL PPO training..."
 
-    uv run --isolated --frozen --extra verl --env-file "${env_file}" \
+    uv run --frozen --extra verl --env-file "${env_file}" \
         -m skyrl_agent.integrations.verl.verl_main_ppo \
         algorithm.adv_estimator=loop \
         data.train_files="${TRAIN_DATA}" \
@@ -200,7 +243,7 @@ main() {
         actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
         actor_rollout_ref.actor.ulysses_sequence_parallel_size="${SP_SIZE}" \
         actor_rollout_ref.rollout.tensor_model_parallel_size="${TP_SIZE}" \
-        actor_rollout_ref.rollout.enforce_eager=False \
+        actor_rollout_ref.rollout.enforce_eager=True \
         actor_rollout_ref.rollout.free_cache_engine=True \
         actor_rollout_ref.rollout.name=vllm \
         actor_rollout_ref.rollout.mode=async \

@@ -50,7 +50,7 @@ from verl.utils.debug import marked_timer
 from verl.utils.metric import (
     reduce_metrics,
 )
-from verl.trainer.ppo.ray_trainer import Role, compute_advantage, RayPPOTrainer
+from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role, compute_advantage, RayPPOTrainer
 
 from .upload_utils import upload_to_remote_background
 

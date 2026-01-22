@@ -68,7 +68,9 @@ def _get_swebench_workspace_dir_name(instance: pd.Series, dataset: str) -> str:
 def get_instance_docker_image(instance: pd.Series, dataset: str) -> str:
     """Get the docker image for a given SWE-Bench instance."""
     if "r2e-gym" in dataset:
-        return f"{DOCKER_IMAGE_PREFIX}r2e-{instance['instance_id'].split('-')[0]}"
+        # R2E images: instance_id already contains the full image path
+        # Format: {user}/{repo}:{commit_hash} e.g. namanjain12/orange3_final:2d9617bd0cb1f0ba61771258410ab8fae8e7e24d
+        return f"docker.io/{instance['instance_id']}"
 
     # Standard SWE-Bench image naming
     repo = instance.repo.replace("/", "__")
@@ -171,6 +173,14 @@ async def initialize_workspace_commands(workspace: APIRemoteWorkspace, instance:
 
 class SWEBenchTask(BaseTask):
     """SWE-Bench task implementation using OpenHands SDK."""
+
+    @classmethod
+    async def initialize_runtime(cls, *args, **kwargs):
+        """Initialize the runtime for the task.
+
+        For SWEBench, runtime initialization is handled by OpenHands SDK.
+        """
+        pass
 
     @classmethod
     def get_instruction(cls, instance: pd.Series, dataset: str) -> str:
@@ -285,7 +295,9 @@ A successful resolution means:
         # Get SLURM remote runtime API URL from environment
         # This is set by the SLURM job coordination (see slurm/jobs/verl_training.sbatch)
         runtime_api_url = os.environ.get("SANDBOX_REMOTE_RUNTIME_API_URL")
+        logger.info(f"[DEBUG initialize_workspace] SANDBOX_REMOTE_RUNTIME_API_URL = {runtime_api_url}")
         if not runtime_api_url:
+            logger.error("[DEBUG] SANDBOX_REMOTE_RUNTIME_API_URL is NOT SET in Ray worker!")
             raise ValueError(
                 "SANDBOX_REMOTE_RUNTIME_API_URL environment variable not set. "
                 "This should be set by the SLURM job coordination scripts."

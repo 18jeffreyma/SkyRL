@@ -45,11 +45,9 @@ CONTAINER_IMAGE="${CONTAINER_IMAGE:-ghcr.io/opendevin/sandbox:main}"
 # Paths
 SLURM_RUNTIME_DIR="${SKYRL_PROJECT_ROOT}/slurm-remote-runtime"
 
-# API Key (generate if not provided)
-if [[ -z "${ALLHANDS_API_KEY:-}" ]]; then
-    ALLHANDS_API_KEY="skyrl-runtime-$(openssl rand -hex 16)"
-    log_warn "Generated new API key: ${ALLHANDS_API_KEY}"
-fi
+# Disable API authentication for simplicity in SLURM environment
+# Both runtime and training jobs run in same trusted environment
+DISABLE_AUTH=true
 
 # ============================================================================
 # Validation
@@ -77,6 +75,15 @@ cleanup() {
         kill "${API_SERVER_PID}" 2>/dev/null || true
         wait "${API_SERVER_PID}" 2>/dev/null || true
     fi
+
+    # Stop Podman service if running
+    if [[ -n "${PODMAN_SERVICE_PID:-}" ]]; then
+        kill "${PODMAN_SERVICE_PID}" 2>/dev/null || true
+        wait "${PODMAN_SERVICE_PID}" 2>/dev/null || true
+    fi
+
+    # Clean up Podman socket file
+    rm -f "/tmp/podman-${USER}-${SLURM_JOB_ID}.sock" 2>/dev/null || true
 
     log_info "Runtime server cleanup complete"
 }
@@ -111,19 +118,45 @@ main() {
         log_warn "No venv found, using system Python"
     fi
 
+    # Start Podman service for Docker-compatible API (needed for image building)
+    # This exposes a socket that docker-py can connect to
+    # Use /tmp since /run/user/ is not writable on SLURM nodes
+    local podman_socket="/tmp/podman-${USER}-${SLURM_JOB_ID}.sock"
+
+    # Start podman system service in background (--time=0 means no timeout)
+    podman system service --time=0 "unix://${podman_socket}" &
+    PODMAN_SERVICE_PID=$!
+    sleep 2  # Give it time to start
+
+    if [[ -S "${podman_socket}" ]]; then
+        export DOCKER_HOST="unix://${podman_socket}"
+        log_info "Started Podman service at ${podman_socket}"
+        log_info "Set DOCKER_HOST=${DOCKER_HOST}"
+
+        # Authenticate with Docker Hub for pulling private r2e images
+        local docker_token_file="${HOME}/dockerhub_token.txt"
+        if [[ -f "${docker_token_file}" ]]; then
+            # Strip newlines and authenticate
+            tr -d '\n' < "${docker_token_file}" | podman login -u 18jeffreyma --password-stdin docker.io && \
+                log_info "Authenticated with Docker Hub" || \
+                log_warn "Failed to authenticate with Docker Hub"
+        else
+            log_warn "Docker token file not found at ${docker_token_file}, private images may fail to pull"
+        fi
+    else
+        log_warn "Failed to start Podman service, image building may not work"
+    fi
+
     # Determine the API URL
     local hostname
     hostname=$(hostname -f)
     local api_url="http://${hostname}:${RUNTIME_PORT}"
 
     log_info "Runtime API will be available at: ${api_url}"
-    log_info "API Key: ${ALLHANDS_API_KEY}"
+    log_info "Authentication: DISABLED (trusted SLURM environment)"
 
     # Write the API URL to coordination file
     write_runtime_url "${SKYRL_COORD_DIR}" "${api_url}"
-
-    # Also write the API key
-    echo "${ALLHANDS_API_KEY}" > "${SKYRL_COORD_DIR}/runtime_api_key.txt"
 
     # Start the API server
     log_info "Starting slurm-remote-runtime API server..."
@@ -131,15 +164,18 @@ main() {
     log_info "  CPUs per worker: ${CPUS_PER_WORKER}"
     log_info "  Memory per worker: ${MEMORY_PER_WORKER}"
 
-    # Run the API server in the background
-    python -m slurm_runtime.api_server \
+    # Run the API server in the background (no auth required in trusted SLURM environment)
+    # Image building is enabled by default to handle base images that need openhands-agent-server
+    "${SLURM_RUNTIME_DIR}/.venv/bin/python" -m slurm_runtime.api_server \
         --container-image "${CONTAINER_IMAGE}" \
         --host "0.0.0.0" \
         --port "${RUNTIME_PORT}" \
-        --api-key "${ALLHANDS_API_KEY}" \
+        --disable-auth \
+        --build-reserved-cpus 4 \
         --cpus-per-worker "${CPUS_PER_WORKER}" \
         --memory-per-worker "${MEMORY_PER_WORKER}" \
         --cpu-pinning-method taskset \
+        --worker-startup-timeout 600 \
         --verbose &
 
     API_SERVER_PID=$!

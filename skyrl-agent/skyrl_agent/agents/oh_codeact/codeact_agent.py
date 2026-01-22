@@ -47,9 +47,27 @@ class OHCodeActAgent(Agent):
     """
 
     # Custom fields for RL training (not part of base Agent)
+    # Use underscore prefix for Pydantic compatibility (frozen model)
     _infer_engine: Optional[AsyncInferBackend] = None
     _tokenizer: Optional[Any] = None
     _traj_config: Optional[TrajectoryConfig] = None
+    _max_prompt_length: int = 32768
+    _step_count: int = 0
+    _sampling_params: dict = None
+    _instance_id: str = None
+    _trajectory_id: int = 0
+    _qwen3_enable_thinking: bool = False
+    _qwen3_acc_thinking: bool = False
+    _agent_id: str = None
+
+    # Additional instance state (also private for frozen model)
+    _messages: List[dict] = None
+    _prompt_token_len: int = 0
+    _response_token_len: int = 0
+    _pending_actions: deque = None
+    _workspace: Any = None
+    _conversation: Any = None
+    _max_iterations: int = 30
 
     def __init__(
         self,
@@ -86,34 +104,36 @@ class OHCodeActAgent(Agent):
         )
 
         # Store our custom inference components
-        self._infer_engine = infer_engine
-        self._tokenizer = tokenizer
-        self._traj_config = traj_config
-        self.max_prompt_length = traj_config.max_prompt_length
-        self.step_count = 0
-        self.sampling_params = traj_config.sampling_params
+        # Use object.__setattr__ to bypass Pydantic frozen model restrictions
+        object.__setattr__(self, '_infer_engine', infer_engine)
+        object.__setattr__(self, '_tokenizer', tokenizer)
+        object.__setattr__(self, '_traj_config', traj_config)
+        object.__setattr__(self, '_max_prompt_length', traj_config.max_prompt_length)
+        object.__setattr__(self, '_step_count', 0)
+        object.__setattr__(self, '_sampling_params', traj_config.sampling_params)
 
         # Store instance and trajectory IDs
-        self.instance_id = traj_config.instance_id
-        self.trajectory_id = traj_config.trajectory_id
-        self.qwen3_enable_thinking = traj_config.qwen3_enable_thinking
-        self.qwen3_acc_thinking = traj_config.qwen3_acc_thinking
+        object.__setattr__(self, '_instance_id', traj_config.instance_id)
+        object.__setattr__(self, '_trajectory_id', traj_config.trajectory_id)
+        object.__setattr__(self, '_qwen3_enable_thinking', traj_config.qwen3_enable_thinking)
+        object.__setattr__(self, '_qwen3_acc_thinking', traj_config.qwen3_acc_thinking)
 
         # Agent ID for request tracking
-        self.agent_id = uuid4().hex
+        object.__setattr__(self, '_agent_id', uuid4().hex)
 
         # Manual message tracking for trajectory recording
-        self.messages: List[dict] = []
-        self.prompt_token_len = 0
-        self.response_token_len = 0
+        object.__setattr__(self, '_messages', [])
+        object.__setattr__(self, '_prompt_token_len', 0)
+        object.__setattr__(self, '_response_token_len', 0)
 
         # Pending actions queue
-        self.pending_actions: deque = deque()
+        object.__setattr__(self, '_pending_actions', deque())
 
         # Workspace and conversation (set during initialization)
-        self.workspace = None
-        self.conversation = None
-        self.max_iterations = traj_config.max_iterations if hasattr(traj_config, 'max_iterations') else 30
+        object.__setattr__(self, '_workspace', None)
+        object.__setattr__(self, '_conversation', None)
+        max_iter = traj_config.max_iterations if hasattr(traj_config, 'max_iterations') else 30
+        object.__setattr__(self, '_max_iterations', max_iter)
 
     def _encode_prompt(self, messages: List[dict]) -> List[int]:
         """Encode messages to token IDs using the tokenizer.
@@ -124,15 +144,15 @@ class OHCodeActAgent(Agent):
         Returns:
             List of token IDs.
         """
-        if self.qwen3_acc_thinking:
+        if self._qwen3_acc_thinking:
             # Use the Qwen3 thinking mode chat template
-            assert self.qwen3_enable_thinking, "Qwen3 thinking mode should for accumulating thinking."
+            assert self._qwen3_enable_thinking, "Qwen3 thinking mode should for accumulating thinking."
             chat_template = get_templates_path() / "qwen3_acc_thinking.jinja2"
             input_ids = self._tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
                 tokenize=True,
-                enable_thinking=self.qwen3_enable_thinking,
+                enable_thinking=self._qwen3_enable_thinking,
                 chat_template=chat_template.read_text(),
             )
         else:
@@ -140,7 +160,7 @@ class OHCodeActAgent(Agent):
                 messages,
                 add_generation_prompt=True,
                 tokenize=True,
-                enable_thinking=self.qwen3_enable_thinking
+                enable_thinking=self._qwen3_enable_thinking
             )
         return input_ids
 
@@ -160,8 +180,8 @@ class OHCodeActAgent(Agent):
             on_event: Callback to emit events.
             on_token: Optional callback for streaming tokens.
         """
-        self.step_count += 1
-        print(f"instance id {self.instance_id}, trajectory {self.trajectory_id}, step {self.step_count}")
+        object.__setattr__(self, '_step_count', self._step_count + 1)
+        print(f"instance id {self._instance_id}, trajectory {self._trajectory_id}, step {self._step_count}")
 
         state = conversation.state
 
@@ -201,38 +221,38 @@ class OHCodeActAgent(Agent):
         messages = self._convert_messages_to_dict(llm_messages)
 
         # Initialize or update our message history for trajectory tracking
-        if len(self.messages) == 0:
-            self.messages = messages
+        if len(self._messages) == 0:
+            object.__setattr__(self, '_messages', messages)
         else:
             if messages:
                 obs = messages[-1]
                 if obs.get("role") == "user":
-                    remaining_steps = self.max_iterations - self.step_count + 1
+                    remaining_steps = self._max_iterations - self._step_count + 1
                     if remaining_steps > 1:
                         obs["content"] += f"\nSteps remaining: {remaining_steps}."
                     else:
                         obs["content"] += "\nThis is your last step, make sure to use the finish tool to submit your final answer."
-                    self.messages.append(obs)
+                    self._messages.append(obs)
                     print(f"Obs: {obs['content'][:200]}...")
 
         try:
             # Encode prompt using our tokenizer
-            input_ids = self._encode_prompt(self.messages)
+            input_ids = self._encode_prompt(self._messages)
 
             # Track token lengths for context window management
-            if len(self.messages) == 2:
+            if len(self._messages) == 2:
                 # system + first user message
-                self.prompt_token_len = len(input_ids)
+                object.__setattr__(self, '_prompt_token_len', len(input_ids))
             else:
-                self.response_token_len = len(input_ids) - self.prompt_token_len
+                object.__setattr__(self, '_response_token_len', len(input_ids) - self._prompt_token_len)
 
             # Check context window limits
-            if self.response_token_len >= self.max_prompt_length - 3000:
-                self.messages[-1]["content"] += "\nNote: You are running out of tokens, submit your solution through finish tool now."
-                input_ids = self._encode_prompt(self.messages)
-                self.response_token_len = len(input_ids) - self.prompt_token_len
+            if self._response_token_len >= self._max_prompt_length - 3000:
+                self._messages[-1]["content"] += "\nNote: You are running out of tokens, submit your solution through finish tool now."
+                input_ids = self._encode_prompt(self._messages)
+                object.__setattr__(self, '_response_token_len', len(input_ids) - self._prompt_token_len)
 
-            if self.response_token_len >= self.max_prompt_length:
+            if self._response_token_len >= self._max_prompt_length:
                 # Emit finish action for context exceeded
                 finish_event = ActionEvent(
                     source="agent",
@@ -243,18 +263,18 @@ class OHCodeActAgent(Agent):
                 return
 
             # Set up sampling params with remaining context
-            sampling_params = copy.deepcopy(self.sampling_params)
-            sampling_params["max_tokens"] = self.max_prompt_length - self.response_token_len
+            sampling_params = copy.deepcopy(self._sampling_params)
+            sampling_params["max_tokens"] = self._max_prompt_length - self._response_token_len
 
             # Generate response using our custom inference backend
             response_str, meta_info = call_async_from_sync(
                 self._infer_engine.async_generate_ids,
                 input_ids=input_ids,
                 sampling_params=sampling_params,
-                request_id=self.agent_id,
+                request_id=self._agent_id,
             )
             stop_reason = meta_info.get("finish_reason")
-            print(f"instance id {self.instance_id}, trajectory {self.trajectory_id}, response {response_str[:200] if response_str else 'None'}... stop reason {stop_reason}")
+            print(f"instance id {self._instance_id}, trajectory {self._trajectory_id}, response {response_str[:200] if response_str else 'None'}... stop reason {stop_reason}")
 
             if not response_str:
                 finish_event = ActionEvent(
@@ -266,7 +286,7 @@ class OHCodeActAgent(Agent):
                 return
 
             # Store response in our message history
-            self.messages.append({"role": "assistant", "content": response_str})
+            self._messages.append({"role": "assistant", "content": response_str})
 
             if stop_reason == "length":
                 finish_event = ActionEvent(
@@ -405,7 +425,7 @@ class OHCodeActAgent(Agent):
 
             if (current_step == 1) or (current_step % 10 == 0):
                 instance_dir = (
-                    Path(f"./trace/{run_name}/step{current_step}") / str(self.instance_id) / str(self.trajectory_id)
+                    Path(f"./trace/{run_name}/step{current_step}") / str(self._instance_id) / str(self._trajectory_id)
                 )
                 instance_dir.mkdir(exist_ok=True, parents=True)
 
@@ -413,12 +433,12 @@ class OHCodeActAgent(Agent):
                 trace_file = instance_dir / f"trace_{timestamp}.json"
 
                 with open(trace_file, "w") as f:
-                    result_json = json.dumps(self.messages, default=lambda x: str(x))
+                    result_json = json.dumps(self._messages, default=lambda x: str(x))
                     f.write(result_json)
         except Exception as e:
             logger.warning(f"Failed to save trace: {e}")
 
-        return self.messages
+        return self._messages
 
     def is_finished(self, conversation: LocalConversation) -> bool:
         """Check if the agent has finished.
@@ -434,9 +454,9 @@ class OHCodeActAgent(Agent):
 
     def close(self) -> None:
         """Close the agent and release resources."""
-        if self.workspace:
+        if self._workspace:
             try:
-                self.workspace.close()
+                self._workspace.close()
             except Exception as e:
                 logger.warning(f"Error closing workspace: {e}")
-            self.workspace = None
+            object.__setattr__(self, '_workspace', None)

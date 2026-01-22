@@ -55,7 +55,13 @@ async def async_pipeline_dispatcher(
         async def initialize_one():
             while True:
                 instance_id, trajectory_id = await init_queue.get()
-                await getattr(trajectories[instance_id][trajectory_id], init_fn)()
+                logger.info(f"[DEBUG] initialize_one starting for instance={instance_id}, trajectory={trajectory_id}")
+                try:
+                    await getattr(trajectories[instance_id][trajectory_id], init_fn)()
+                    logger.info(f"[DEBUG] initialize_one completed for instance={instance_id}, trajectory={trajectory_id}")
+                except Exception as e:
+                    logger.error(f"[DEBUG] initialize_one FAILED for instance={instance_id}, trajectory={trajectory_id}: {e}")
+                    raise
                 await run_queue.put((instance_id, trajectory_id))
                 init_queue.task_done()
 
@@ -78,7 +84,7 @@ async def async_pipeline_dispatcher(
         eval_tasks = [asyncio.create_task(eval_one()) for _ in range(max_eval_parallel_agents)]
 
         # Wait until all initialization tasks are done
-        print("Waiting for initialization tasks to complete...")
+        logger.info("[DEBUG] About to wait for initialization tasks to complete...")
         await init_queue.join()
         for task in init_tasks:
             task.cancel()

@@ -29,6 +29,9 @@ from .verl_trainer import SkyAgentPPOTrainer
 import torch
 from collections import defaultdict
 
+# Debug: Print environment variables at module load time
+print(f"[DEBUG verl_main_ppo.py] SANDBOX_REMOTE_RUNTIME_API_URL at import: {os.environ.get('SANDBOX_REMOTE_RUNTIME_API_URL', 'NOT SET')}", flush=True)
+print(f"[DEBUG verl_main_ppo.py] ALLHANDS_API_KEY at import: {'SET' if os.environ.get('ALLHANDS_API_KEY') else 'NOT SET'}", flush=True)
 
 from verl.workers.reward_manager import register
 from verl.protocol import DataProto
@@ -122,6 +125,10 @@ def run_ppo(config) -> None:
                 for distributed PPO training including Ray initialization settings,
                 model paths, and training hyperparameters.
     """
+    # Debug: Check Ray state at main() entry
+    print(f"[DEBUG main()] Entered main() - ray.is_initialized() = {ray.is_initialized()}", flush=True)
+    print(f"[DEBUG main()] SANDBOX_REMOTE_RUNTIME_API_URL = {os.environ.get('SANDBOX_REMOTE_RUNTIME_API_URL', 'NOT SET')}", flush=True)
+
     # Check if Ray is not initialized
     if not ray.is_initialized():
         # Initialize Ray with a local cluster configuration
@@ -136,10 +143,26 @@ def run_ppo(config) -> None:
             print("Exporting `LD_LIBRARY_PATH` from driver")
             PPO_RAY_RUNTIME_ENV["env_vars"].update({"LD_LIBRARY_PATH": os.environ["LD_LIBRARY_PATH"]})
 
+        # Export SANDBOX_REMOTE_RUNTIME_API_URL for remote runtime connections
+        # This is set by the SLURM job coordination scripts (slurm/jobs/verl_training.sbatch)
+        print(f"[DEBUG] Checking SANDBOX_REMOTE_RUNTIME_API_URL: {os.environ.get('SANDBOX_REMOTE_RUNTIME_API_URL', 'NOT SET')}", flush=True)
+        if os.environ.get("SANDBOX_REMOTE_RUNTIME_API_URL", None):
+            print(f"Exporting `SANDBOX_REMOTE_RUNTIME_API_URL` from driver: {os.environ['SANDBOX_REMOTE_RUNTIME_API_URL']}", flush=True)
+            PPO_RAY_RUNTIME_ENV["env_vars"].update({"SANDBOX_REMOTE_RUNTIME_API_URL": os.environ["SANDBOX_REMOTE_RUNTIME_API_URL"]})
+        else:
+            print("[WARNING] SANDBOX_REMOTE_RUNTIME_API_URL is NOT SET - remote runtime connections will fail!", flush=True)
+        if os.environ.get("ALLHANDS_API_KEY", None):
+            print("Exporting `ALLHANDS_API_KEY` from driver", flush=True)
+            PPO_RAY_RUNTIME_ENV["env_vars"].update({"ALLHANDS_API_KEY": os.environ["ALLHANDS_API_KEY"]})
+
+        print(f"[DEBUG main()] About to call ray.init() with env_vars: {list(PPO_RAY_RUNTIME_ENV.get('env_vars', {}).keys())}", flush=True)
         ray.init(
             runtime_env=PPO_RAY_RUNTIME_ENV,
             num_cpus=config.ray_init.num_cpus,
         )
+        print("[DEBUG main()] ray.init() completed", flush=True)
+    else:
+        print("[DEBUG main()] Ray was already initialized, skipping ray.init()", flush=True)
 
     # Create a remote instance of the TaskRunner class, and
     # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete

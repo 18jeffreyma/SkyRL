@@ -34,6 +34,8 @@ CONFIG_FILE=""
 DRY_RUN=false
 SKIP_RUNTIME=false
 RUNTIME_ONLY=false
+EXISTING_RUNTIME_URL=""
+EXISTING_API_KEY=""
 
 # ============================================================================
 # Argument Parsing
@@ -51,6 +53,7 @@ Options:
     --skip-runtime      Skip runtime job (use existing runtime)
     --runtime-only      Only launch runtime job
     --runtime-url URL   Use existing runtime at URL (implies --skip-runtime)
+    --api-key KEY       API key for existing runtime (required with --runtime-url)
     --help              Show this help message
 
 Examples:
@@ -85,6 +88,10 @@ parse_args() {
             --runtime-url)
                 EXISTING_RUNTIME_URL="$2"
                 SKIP_RUNTIME=true
+                shift 2
+                ;;
+            --api-key)
+                EXISTING_API_KEY="$2"
                 shift 2
                 ;;
             --help)
@@ -206,9 +213,9 @@ export TOTAL_EPOCHS="${TOTAL_EPOCHS:-15}"
 export GPUS_PER_NODE="${GPUS_PER_NODE}"
 
 # Data paths
-export DATA_DIR="${DATA_DIR:-/mnt/shared_storage/datasets/r2e-all}"
-export TRAIN_DATA="${TRAIN_DATA:-\${DATA_DIR}/train.parquet}"
-export VAL_DATA="${VAL_DATA:-\${DATA_DIR}/validation.parquet}"
+export DATA_DIR="${DATA_DIR}"
+export TRAIN_DATA="${TRAIN_DATA}"
+export VAL_DATA="${VAL_DATA}"
 
 # Output paths
 export CHECKPOINT_DIR="${CHECKPOINT_DIR:-/mnt/local_storage/ckpts/skyrl}"
@@ -273,9 +280,11 @@ submit_training_job() {
     sbatch_file=$(create_training_sbatch_override "${coord_dir}")
 
     local sbatch_args=()
-    if [[ -n "${dependency}" ]] && [[ "${dependency}" != "RUNTIME_DRY_RUN" ]]; then
-        # Use afterany so training starts even if runtime fails (it will detect and exit)
-        sbatch_args+=(--dependency="afterok:${dependency}")
+    # No SLURM dependency needed - training job polls for runtime_ready.flag
+    # The flag-based coordination is more reliable than SLURM dependency types
+    if false && [[ -n "${dependency}" ]] && [[ "${dependency}" != "RUNTIME_DRY_RUN" ]]; then
+        # Disabled: Use 'after' so training starts after runtime begins (not after it completes)
+        sbatch_args+=(--dependency="after:${dependency}")
     fi
 
     if [[ "${DRY_RUN}" == true ]]; then
