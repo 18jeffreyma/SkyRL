@@ -22,25 +22,26 @@ data:
 generator:
   infer_backend: verl
   backend_config: null
-  num_trajectories: 8
-  max_iterations: 50 # 50
-  max_prompt_length: 32768
+  num_trajectories: 2  # Must match ROLLOUT_N in dev.conf (reduced for test partition)
+  max_iterations: 20  # Reduced from 50 to fit in 20GB MIG GPU
+  max_prompt_length: 2048  # Reduced for MIG GPU memory constraints during backward pass
   sampling_params:
     temperature: 1
     top_p: 1
     top_k: -1
     min_p: 0
-    max_tokens: 32768
+    max_tokens: 1024  # Reduced to avoid OOM during backward pass on 20GB MIG GPU
+    stop: ["</function>"]  # Stop at end of XML-style function call
   val_config:
     num_trajectories: 1
     sampling_params:
       temperature: 1
       top_p: 0.95
-      max_tokens: 32768
+      max_tokens: 2048  # Reduced to avoid OOM during backward pass
   remove_think_tokens: false
   vision_is_active: false
-  qwen3_enable_thinking: true
-  qwen3_acc_thinking: true
+  qwen3_enable_thinking: false  # Disabled for Qwen2.5 (Qwen3-specific feature)
+  qwen3_acc_thinking: false     # Disabled for Qwen2.5 (Qwen3-specific feature)
 
 dispatcher:
   type: async_pipeline

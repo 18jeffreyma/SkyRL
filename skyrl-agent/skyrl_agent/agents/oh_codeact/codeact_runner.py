@@ -25,6 +25,7 @@ from openhands.sdk.event import Event, MessageEvent, ActionEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.agent.agent import ConversationExecutionStatus
 from openhands.workspace import APIRemoteWorkspace
+from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 import logging
 from dataclasses import dataclass
@@ -33,6 +34,94 @@ import os
 from skyrl_agent.tasks.swebench.utils import SWEBenchTask
 
 logger = logging.getLogger(__name__)
+
+
+class LocalWorkspaceAdapter(LocalWorkspace):
+    """Adapter that wraps APIRemoteWorkspace to satisfy LocalConversation's type check.
+
+    This adapter makes a remote workspace appear as a LocalWorkspace for the SDK's
+    assertion check, while delegating all operations to the underlying remote workspace.
+    This is needed because:
+    - LocalConversation requires LocalWorkspace (assertion at line 124)
+    - RemoteConversation requires sending agent to server (incompatible with custom agents)
+    - Our use case is hybrid: local agent execution + remote workspace operations
+    """
+
+    _remote_workspace: APIRemoteWorkspace = None
+
+    def __init__(self, remote_workspace: APIRemoteWorkspace):
+        """Initialize adapter wrapping a remote workspace.
+
+        Args:
+            remote_workspace: The APIRemoteWorkspace to wrap.
+        """
+        # Use a temporary local directory for LocalConversation's state management
+        # The remote workspace's working_dir (/testbed) is only for remote command execution
+        import tempfile
+        local_temp_dir = tempfile.mkdtemp(prefix="skyrl_workspace_")
+        super().__init__(working_dir=local_temp_dir)
+        object.__setattr__(self, '_remote_workspace', remote_workspace)
+
+    def execute_command(self, command: str, timeout: int = 120, **kwargs):
+        """Execute command via remote workspace."""
+        return self._remote_workspace.execute_command(command, timeout=timeout, **kwargs)
+
+    def file_upload(self, local_path: str, remote_path: str, **kwargs):
+        """Upload file via remote workspace."""
+        return self._remote_workspace.file_upload(local_path, remote_path, **kwargs)
+
+    def file_download(self, remote_path: str, local_path: str, **kwargs):
+        """Download file via remote workspace."""
+        return self._remote_workspace.file_download(remote_path, local_path, **kwargs)
+
+    def file_read(self, path: str, **kwargs):
+        """Read file via remote workspace."""
+        return self._remote_workspace.file_read(path, **kwargs)
+
+    def file_write(self, path: str, content: str, **kwargs):
+        """Write file via remote workspace."""
+        return self._remote_workspace.file_write(path, content, **kwargs)
+
+    def file_delete(self, path: str, **kwargs):
+        """Delete file via remote workspace."""
+        return self._remote_workspace.file_delete(path, **kwargs)
+
+    def file_exists(self, path: str, **kwargs) -> bool:
+        """Check if file exists via remote workspace."""
+        return self._remote_workspace.file_exists(path, **kwargs)
+
+    def list_dir(self, path: str, **kwargs):
+        """List directory via remote workspace."""
+        return self._remote_workspace.list_dir(path, **kwargs)
+
+    def git_diff(self, path: str, **kwargs):
+        """Get git diff via remote workspace."""
+        return self._remote_workspace.git_diff(path, **kwargs)
+
+    def git_changes(self, path: str, **kwargs):
+        """Get git changes via remote workspace."""
+        return self._remote_workspace.git_changes(path, **kwargs)
+
+    def pause(self):
+        """Pause the remote workspace container."""
+        return self._remote_workspace.pause()
+
+    def resume(self):
+        """Resume the remote workspace container."""
+        return self._remote_workspace.resume()
+
+    @property
+    def alive(self) -> bool:
+        """Check if remote workspace is alive."""
+        return self._remote_workspace.alive
+
+    def close(self):
+        """Close the remote workspace."""
+        # APIRemoteWorkspace uses cleanup() instead of close()
+        if hasattr(self._remote_workspace, 'cleanup'):
+            self._remote_workspace.cleanup()
+        elif hasattr(self._remote_workspace, 'close'):
+            self._remote_workspace.close()
 
 
 @dataclass
@@ -138,19 +227,19 @@ class CodeActTrajectory(BaseTrajectory):
                 instance, data_source, self.cfg.max_iterations
             )
 
-            # Store workspace in agent
-            self.agent.workspace = workspace
+            # Store workspace in agent (use object.__setattr__ for frozen Pydantic model)
+            object.__setattr__(self.agent, '_workspace', workspace)
 
             # Get the instruction for this task
             instruction = self.task.get_instruction(instance, data_source)
-            self.agent.instruction = instruction
+            object.__setattr__(self.agent, 'instruction', instruction)
 
             init_successful = True
             logger.info(f"Successfully initialized workspace for instance {instance_id}")
 
         except Exception as e:
             logger.error(f"Failed to initialize workspace for instance {instance_id}: {str(e)}")
-            self.agent.workspace = None
+            object.__setattr__(self.agent, '_workspace', None)
 
             return_val = {
                 "instance_id": instance_id,
@@ -170,9 +259,9 @@ class CodeActTrajectory(BaseTrajectory):
                 logger.info(
                     f"Init failed. Running cleanup for init agent task for instance {instance_id}, trajectory {trajectory_id}"
                 )
-                if self.agent.workspace:
+                if self.agent._workspace:
                     try:
-                        self.agent.workspace.close()
+                        self.agent._workspace.close()
                     except Exception:
                         pass
 
@@ -186,7 +275,7 @@ class CodeActTrajectory(BaseTrajectory):
         instance = pd.Series(data["instance"])
         data_source = data["data_source"]
         agent = self.agent
-        workspace = agent.workspace
+        workspace = agent._workspace  # Access private attribute
 
         try:
             if not workspace:
@@ -195,10 +284,18 @@ class CodeActTrajectory(BaseTrajectory):
                 )
 
             # Create conversation with SDK
+            # For remote workspaces, wrap in LocalWorkspaceAdapter to satisfy
+            # LocalConversation's type check while delegating operations to the remote
             self.events = []
+            if isinstance(workspace, (APIRemoteWorkspace, RemoteWorkspace)):
+                # Wrap remote workspace in adapter for LocalConversation compatibility
+                workspace_for_conversation = LocalWorkspaceAdapter(workspace)
+            else:
+                workspace_for_conversation = workspace
+
             conversation = LocalConversation(
                 agent=agent,
-                workspace=workspace,
+                workspace=workspace_for_conversation,
                 callbacks=[self._event_callback],
                 max_iteration_per_run=self.cfg.max_iterations,
             )

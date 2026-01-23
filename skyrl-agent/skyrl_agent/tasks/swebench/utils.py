@@ -59,8 +59,34 @@ def assert_and_raise(condition: bool, msg: str):
 RUN_WITH_BROWSING = os.environ.get("RUN_WITH_BROWSING", "false").lower() == "true"
 
 
+def get_command_output(result) -> str:
+    """Extract output from CommandResult, handling both old and new SDK versions.
+
+    Args:
+        result: The CommandResult object from execute_command.
+
+    Returns:
+        Combined stdout/stderr output for error reporting.
+    """
+    if hasattr(result, 'stdout'):
+        # New SDK: has stdout and stderr attributes
+        stdout = result.stdout or ""
+        stderr = result.stderr if hasattr(result, 'stderr') else ""
+        if stderr:
+            return f"stdout: {stdout}\nstderr: {stderr}"
+        return stdout
+    elif hasattr(result, 'output'):
+        # Old SDK: has output attribute
+        return result.output or ""
+    else:
+        return str(result)
+
+
 def _get_swebench_workspace_dir_name(instance: pd.Series, dataset: str) -> str:
     if "r2e-gym" in dataset:
+        return "/testbed"
+    # SWE-Bench images also use /testbed as the repo location
+    if "swe-bench" in dataset.lower() or "swebench" in dataset.lower():
         return "/testbed"
     return "/workspace/" + f'{instance.repo}__{getattr(instance, "version", "null")}'.replace("/", "__")
 
@@ -73,9 +99,11 @@ def get_instance_docker_image(instance: pd.Series, dataset: str) -> str:
         return f"docker.io/{instance['instance_id']}"
 
     # Standard SWE-Bench image naming
-    repo = instance.repo.replace("/", "__")
-    version = getattr(instance, "version", "null")
-    return f"{DOCKER_IMAGE_PREFIX}sweb.eval.x86_64.{repo}__{version}:latest"
+    # Docker Hub uses instance_id with "__" replaced by "_s_"
+    # e.g., "astropy__astropy-12907" -> "sweb.eval.x86_64.astropy_s_astropy-12907"
+    instance_id = instance['instance_id']
+    image_name = instance_id.replace("__", "_s_")
+    return f"{DOCKER_IMAGE_PREFIX}sweb.eval.x86_64.{image_name}:latest"
 
 
 async def initialize_workspace_commands(workspace: APIRemoteWorkspace, instance: pd.Series, dataset: str):
@@ -100,15 +128,19 @@ async def initialize_workspace_commands(workspace: APIRemoteWorkspace, instance:
         git config --global diff.binary false"""
 
     result = workspace.execute_command(cmd, timeout=600)
-    assert_and_raise(result.exit_code == 0, f"Failed to configure environment: {result.output}")
+    # SDK's CommandResult uses stdout/stderr, not output
+    output = get_command_output(result)
+    assert_and_raise(result.exit_code == 0, f"Failed to configure environment: {output}")
 
     # Export USER
     result = workspace.execute_command("export USER=$(whoami); echo USER=${USER}", timeout=600)
-    assert_and_raise(result.exit_code == 0, f"Failed to export USER: {result.output}")
+    output = get_command_output(result)
+    assert_and_raise(result.exit_code == 0, f"Failed to export USER: {output}")
 
     # Create instance data directory
     result = workspace.execute_command("mkdir -p /swe_util/eval_data/instances", timeout=600)
-    assert_and_raise(result.exit_code == 0, f"Failed to create /swe_util/eval_data/instances: {result.output}")
+    output = get_command_output(result)
+    assert_and_raise(result.exit_code == 0, f"Failed to create /swe_util/eval_data/instances: {output}")
 
     # Copy tools to the workspace
     script_dir = os.path.dirname(__file__)
@@ -131,40 +163,49 @@ async def initialize_workspace_commands(workspace: APIRemoteWorkspace, instance:
         workspace.file_upload(temp_file_path, f"/swe_util/eval_data/instances/{swe_instance_json_name}")
 
     # Copy and run entry script
+    # NOTE: Use /bin/bash explicitly since container default shell may be /bin/sh (dash)
+    # which doesn't support 'source' command
     if "r2e-gym" in dataset:
         entry_script = os.path.join(script_dir, "scripts/setup/instance_r2e_entry.sh")
         if os.path.exists(entry_script):
             workspace.file_upload(entry_script, "/swe_util/instance_r2e_entry.sh")
             workspace.execute_command("chmod +x /swe_util/instance_r2e_entry.sh", timeout=60)
-            result = workspace.execute_command("source ~/.bashrc && source /swe_util/instance_r2e_entry.sh", timeout=600)
-            assert_and_raise(result.exit_code == 0, f"Failed to source entry script: {result.output}")
+            result = workspace.execute_command("/bin/bash /swe_util/instance_r2e_entry.sh", timeout=600)
+            output = get_command_output(result)
+            assert_and_raise(result.exit_code == 0, f"Failed to run entry script: {output}")
     else:
         entry_script = os.path.join(script_dir, "scripts/setup/instance_swe_entry.sh")
         if os.path.exists(entry_script):
             workspace.file_upload(entry_script, "/swe_util/instance_swe_entry.sh")
             workspace.execute_command("chmod +x /swe_util/instance_swe_entry.sh", timeout=60)
-            result = workspace.execute_command("source ~/.bashrc && source /swe_util/instance_swe_entry.sh", timeout=600)
-            assert_and_raise(result.exit_code == 0, f"Failed to source entry script: {result.output}")
+            result = workspace.execute_command("/bin/bash /swe_util/instance_swe_entry.sh", timeout=600)
+            output = get_command_output(result)
+            assert_and_raise(result.exit_code == 0, f"Failed to run entry script: {output}")
 
     # Change to workspace directory
     result = workspace.execute_command(f"cd {workspace_dir_name}", timeout=600)
-    assert_and_raise(result.exit_code == 0, f"Failed to cd to {workspace_dir_name}: {result.output}")
+    output = get_command_output(result)
+    assert_and_raise(result.exit_code == 0, f"Failed to cd to {workspace_dir_name}: {output}")
 
     # Git operations for swe-smith
     if dataset == "swe-smith":
         result = workspace.execute_command("git fetch", timeout=600)
-        assert_and_raise(result.exit_code == 0, f"Failed to git fetch: {result.output}")
+        output = get_command_output(result)
+        assert_and_raise(result.exit_code == 0, f"Failed to git fetch: {output}")
 
         result = workspace.execute_command(f'git checkout {instance["instance_id"]}', timeout=600)
-        assert_and_raise(result.exit_code == 0, f'Failed to git checkout: {result.output}')
+        output = get_command_output(result)
+        assert_and_raise(result.exit_code == 0, f'Failed to git checkout: {output}')
 
     # Reset and clean git for non-r2e datasets
     if "r2e-gym" not in dataset:
         result = workspace.execute_command("git reset --hard", timeout=600)
-        assert_and_raise(result.exit_code == 0, f"Failed to git reset: {result.output}")
+        output = get_command_output(result)
+        assert_and_raise(result.exit_code == 0, f"Failed to git reset: {output}")
 
         result = workspace.execute_command('for remote_name in $(git remote); do git remote remove "${remote_name}"; done', timeout=600)
-        assert_and_raise(result.exit_code == 0, f"Failed to remove git remotes: {result.output}")
+        output = get_command_output(result)
+        assert_and_raise(result.exit_code == 0, f"Failed to remove git remotes: {output}")
 
     logger.info("-" * 30)
     logger.info("END Workspace Initialization")
@@ -383,15 +424,11 @@ A successful resolution means:
             workspace.execute_command("\x03", timeout=10)  # Ctrl+C
             result = workspace.execute_command(f"cd {workspace_dir_name}", timeout=600)
 
-        # Get git diff
-        try:
-            git_result = workspace.git_diff(workspace_dir_name)
-            git_patch = git_result.diff if hasattr(git_result, 'diff') else str(git_result)
-        except Exception as e:
-            logger.warning(f"Failed to get git diff: {e}")
-            # Fallback to command-based diff
-            result = workspace.execute_command("git diff", cwd=workspace_dir_name, timeout=600)
-            git_patch = result.output if result.exit_code == 0 else ""
+        # Get git diff using command-based approach
+        # (SDK's workspace.git_diff() has a bug with PosixPath URL construction)
+        result = workspace.execute_command("git diff", cwd=workspace_dir_name, timeout=600)
+        output = get_command_output(result)
+        git_patch = output if result.exit_code == 0 else ""
 
         logger.info("-" * 30)
         logger.info("END Runtime Completion")

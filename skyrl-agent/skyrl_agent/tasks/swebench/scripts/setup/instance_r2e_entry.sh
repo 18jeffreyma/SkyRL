@@ -29,12 +29,14 @@ echo "Custom BM25 components installed successfully"
 find . -name '*.pyc' -delete
 find . -name '__pycache__' -exec rm -rf {} +
 
-# Delete *.pyc files and __pycache__ in /r2e_tests
-find /r2e_tests -name '*.pyc' -delete
-find /r2e_tests -name '__pycache__' -exec rm -rf {} +
+# Delete *.pyc files and __pycache__ in /r2e_tests (if it exists)
+if [ -d "/r2e_tests" ]; then
+    find /r2e_tests -name '*.pyc' -delete 2>/dev/null || true
+    find /r2e_tests -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+fi
 
 export REPO_PATH="/testbed"
-REPO_PATH="/testbed" 
+REPO_PATH="/testbed"
 ALT_PATH="/root"
 SKIP_FILES_NEW=("run_tests.sh" "r2e_tests")
 for skip_file in "${SKIP_FILES_NEW[@]}"; do
@@ -43,8 +45,9 @@ for skip_file in "${SKIP_FILES_NEW[@]}"; do
     fi
 done
 
-# Move /r2e_tests to ALT_PATH
-mv /r2e_tests "$ALT_PATH/r2e_tests"
-
-# Create symlink back to repo
-ln -s "$ALT_PATH/r2e_tests" "$REPO_PATH/r2e_tests"
+# Move /r2e_tests to ALT_PATH (if it exists)
+if [ -d "/r2e_tests" ]; then
+    mv /r2e_tests "$ALT_PATH/r2e_tests"
+    # Create symlink back to repo
+    ln -s "$ALT_PATH/r2e_tests" "$REPO_PATH/r2e_tests"
+fi

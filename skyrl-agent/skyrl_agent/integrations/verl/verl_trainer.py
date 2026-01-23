@@ -20,6 +20,7 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import os
 import uuid
+import logging
 from collections import defaultdict
 from copy import deepcopy
 from pprint import pprint
@@ -725,7 +726,14 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
                     with open(os.path.join(rollout_data_dir, "current_batch_after_step.pkl"), "wb") as f:
                         pickle.dump(batch, f)
                 # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                try:
+                    metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                except RuntimeError as e:
+                    # Handle empty tensor errors when trajectories fail
+                    if "numel() == 0" in str(e):
+                        logging.warning(f"Skipping data metrics due to empty tensors: {e}")
+                    else:
+                        raise
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()

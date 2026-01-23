@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=${CPUS_FOR_RUNTIME:-64}
 #SBATCH --mem=${RUNTIME_MEMORY:-256G}
 #SBATCH --time=${TIME_LIMIT:-12:00:00}
-#SBATCH --exclude=${EXCLUDE_NODES:-}
+# Note: Node exclusion is handled by launch.sh if EXCLUDE_NODES is set in config
 
 # ============================================================================
 # SkyRL Runtime Server Job

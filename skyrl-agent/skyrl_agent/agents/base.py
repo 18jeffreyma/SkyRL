@@ -3,9 +3,43 @@ from collections import defaultdict
 from abc import ABC, abstractmethod
 import os
 import copy
+import pickle
 from omegaconf import OmegaConf, DictConfig
 import pandas as pd
 from loguru import logger
+
+
+def safe_deepcopy(obj: Any) -> Any:
+    """Safely deepcopy an object, handling non-serializable Pydantic models.
+
+    Falls back to shallow copy or dict conversion if deepcopy fails.
+    """
+    try:
+        return copy.deepcopy(obj)
+    except (TypeError, pickle.PicklingError, RecursionError):
+        # Handle Pydantic models or objects with non-serializable attributes
+        if hasattr(obj, 'model_dump'):
+            # Pydantic v2
+            return obj.model_dump()
+        elif hasattr(obj, 'dict'):
+            # Pydantic v1
+            return obj.dict()
+        elif isinstance(obj, dict):
+            # Recursively handle dict values
+            return {k: safe_deepcopy(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            # Recursively handle sequences
+            result = [safe_deepcopy(item) for item in obj]
+            return type(obj)(result) if isinstance(obj, tuple) else result
+        else:
+            # Last resort: shallow copy or return as-is
+            try:
+                return copy.copy(obj)
+            except Exception:
+                logger.warning(f"Could not copy object of type {type(obj)}, returning as-is")
+                return obj
+
+
 from skyrl_agent.tasks.base import BaseTask
 from transformers import AutoTokenizer
 from dataclasses import dataclass
@@ -281,7 +315,7 @@ class AgentRunner:
         global_fallback_set = None
         for results in results_by_instance.values():
             if all(res.get("messages") for _, res in results):
-                global_fallback_set = [copy.deepcopy(res) for _, res in results]
+                global_fallback_set = [safe_deepcopy(res) for _, res in results]
                 break
         # get reward before handling empty messages
         for idx, result in enumerate(matched_results):
@@ -303,7 +337,7 @@ class AgentRunner:
                         fallback_res = global_fallback_set[j % len(global_fallback_set)]
                         print(f"Empty messages for instance_id {instance_id}, trajectory {idx}. Using global fallback.")
                         for key, value in fallback_res.items():
-                            matched_results[idx][key] = copy.deepcopy(value)
+                            matched_results[idx][key] = safe_deepcopy(value)
                         matched_results[idx]["finish_reason"] = "error_runtime"
 
                 else:
@@ -314,7 +348,7 @@ class AgentRunner:
                     if not res.get("messages", []):
                         print(f"Empty messages for instance_id {instance_id}, trajectory {idx}. Using local fallback.")
                         for key, value in fallback.items():
-                            matched_results[idx][key] = copy.deepcopy(value)
+                            matched_results[idx][key] = safe_deepcopy(value)
                         matched_results[idx]["finish_reason"] = "error_runtime"
 
         # error evaluation mainly due to timeout during tool execution

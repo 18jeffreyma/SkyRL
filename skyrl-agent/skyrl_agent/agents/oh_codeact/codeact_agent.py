@@ -6,6 +6,8 @@ with a custom AsyncInferBackend for RL training with VERL.
 
 from typing import Any, List, Optional, Callable
 import json
+import os
+import re
 from pathlib import Path
 from datetime import datetime
 from uuid import uuid4
@@ -13,7 +15,13 @@ import traceback
 import copy
 from collections import deque
 
-from skyrl_agent.functional.function_calling import convert_str_to_completion_format
+from skyrl_agent.functional.function_calling import (
+    convert_str_to_completion_format,
+    convert_tools_to_description,
+    SYSTEM_PROMPT_SUFFIX_TEMPLATE,
+    FN_REGEX_PATTERN,
+    FN_PARAM_REGEX_PATTERN,
+)
 from skyrl_agent.functional.chat_template import get_templates_path
 from skyrl_agent.config.configuration_utils import TrajectoryConfig
 from skyrl_agent.integrations.base import AsyncInferBackend
@@ -28,7 +36,7 @@ from openhands.sdk.agent.agent import (
     FinishAction,
 )
 from openhands.sdk.event import MessageEvent, ActionEvent, ObservationEvent, Event
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm import Message, TextContent, MessageToolCall
 from openhands.tools.preset.default import get_default_tools
 
 import logging
@@ -45,6 +53,20 @@ class OHCodeActAgent(Agent):
     - Support context window management for long sequences
     - Integrate with VERL PPO training pipeline
     """
+
+    @property
+    def prompt_dir(self) -> str:
+        """Return the SDK's built-in prompts directory.
+
+        Override the base class to use the SDK's prompts instead of expecting
+        a local prompts directory in this module.
+        """
+        import openhands.sdk.agent
+        sdk_agent_module = openhands.sdk.agent
+        sdk_agent_path = sdk_agent_module.__file__
+        if sdk_agent_path is None:
+            raise ValueError("Could not find openhands.sdk.agent module path")
+        return os.path.join(os.path.dirname(sdk_agent_path), "prompts")
 
     # Custom fields for RL training (not part of base Agent)
     # Use underscore prefix for Pydantic compatibility (frozen model)
@@ -96,10 +118,14 @@ class OHCodeActAgent(Agent):
             enable_browser=traj_config.tools.get("enable_browsing", False),
         )
 
-        # Initialize parent Agent class
+        # Get path to our custom system prompt
+        custom_prompt_path = Path(__file__).parent / "prompts" / "skyrl_system_prompt.j2"
+
+        # Initialize parent Agent class with custom system prompt
         super().__init__(
             llm=dummy_llm,
             tools=tools,
+            system_prompt_filename=str(custom_prompt_path) if custom_prompt_path.exists() else None,
             **kwargs,
         )
 
@@ -135,6 +161,11 @@ class OHCodeActAgent(Agent):
         max_iter = traj_config.max_iterations if hasattr(traj_config, 'max_iterations') else 30
         object.__setattr__(self, '_max_iterations', max_iter)
 
+    @property
+    def step_count(self) -> int:
+        """Return the current step count (for compatibility with codeact_runner)."""
+        return self._step_count
+
     def _encode_prompt(self, messages: List[dict]) -> List[int]:
         """Encode messages to token IDs using the tokenizer.
 
@@ -163,6 +194,72 @@ class OHCodeActAgent(Agent):
                 enable_thinking=self._qwen3_enable_thinking
             )
         return input_ids
+
+    def _create_action_event(
+        self,
+        action: "Action",
+        tool_name: str,
+        arguments: str = "{}",
+        thought_text: str = "",
+    ) -> ActionEvent:
+        """Create a properly formatted ActionEvent for any action.
+
+        The SDK's ActionEvent requires many fields that must be filled in
+        for proper validation. This helper creates a complete ActionEvent
+        for emitting actions.
+
+        Args:
+            action: The Action object to emit.
+            tool_name: The name of the tool being called.
+            arguments: JSON string of the tool arguments.
+            thought_text: Optional thought text to include.
+
+        Returns:
+            A properly constructed ActionEvent.
+        """
+        from uuid import uuid4
+
+        tool_call_id = f"call_{uuid4().hex[:24]}"
+        llm_response_id = f"resp_{uuid4().hex[:24]}"
+
+        # Create a MessageToolCall for the action
+        tool_call = MessageToolCall(
+            id=tool_call_id,
+            name=tool_name,
+            arguments=arguments,
+            origin="completion",  # Required field: "completion" or "responses"
+        )
+
+        return ActionEvent(
+            source="agent",
+            thought=[TextContent(text=thought_text)] if thought_text else [],
+            reasoning_content=None,
+            thinking_blocks=[],
+            responses_reasoning_item=None,
+            tool_call=tool_call,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            llm_response_id=llm_response_id,
+            action=action,
+        )
+
+    def _create_finish_action_event(self, message: str) -> ActionEvent:
+        """Create a properly formatted ActionEvent for finish actions.
+
+        Args:
+            message: The finish message to include.
+
+        Returns:
+            A properly constructed ActionEvent with FinishAction.
+        """
+        import json
+        finish_action = FinishAction(message=message)
+        return self._create_action_event(
+            action=finish_action,
+            tool_name="finish",
+            arguments=json.dumps({"message": message}),
+            thought_text=f"Finishing with: {message}",
+        )
 
     def step(
         self,
@@ -254,10 +351,7 @@ class OHCodeActAgent(Agent):
 
             if self._response_token_len >= self._max_prompt_length:
                 # Emit finish action for context exceeded
-                finish_event = ActionEvent(
-                    source="agent",
-                    action=FinishAction(thought="CONTEXT_WINDOW_EXCEEDED"),
-                )
+                finish_event = self._create_finish_action_event("CONTEXT_WINDOW_EXCEEDED")
                 on_event(finish_event)
                 state.execution_status = ConversationExecutionStatus.FINISHED
                 return
@@ -277,10 +371,7 @@ class OHCodeActAgent(Agent):
             print(f"instance id {self._instance_id}, trajectory {self._trajectory_id}, response {response_str[:200] if response_str else 'None'}... stop reason {stop_reason}")
 
             if not response_str:
-                finish_event = ActionEvent(
-                    source="agent",
-                    action=FinishAction(thought="BAD_LLM_RESPONSE"),
-                )
+                finish_event = self._create_finish_action_event("BAD_LLM_RESPONSE")
                 on_event(finish_event)
                 state.execution_status = ConversationExecutionStatus.FINISHED
                 return
@@ -289,10 +380,7 @@ class OHCodeActAgent(Agent):
             self._messages.append({"role": "assistant", "content": response_str})
 
             if stop_reason == "length":
-                finish_event = ActionEvent(
-                    source="agent",
-                    action=FinishAction(thought="CONTEXT_WINDOW_EXCEEDED"),
-                )
+                finish_event = self._create_finish_action_event("CONTEXT_WINDOW_EXCEEDED")
                 on_event(finish_event)
                 state.execution_status = ConversationExecutionStatus.FINISHED
                 return
@@ -312,13 +400,20 @@ class OHCodeActAgent(Agent):
             on_event(response_event)
 
             # Parse actions from response (tool calls)
-            actions = self._parse_actions_from_response(response_str)
+            # Returns list of (action, tool_name, params) tuples
+            import json
+            parsed_results = self._parse_actions_from_response(response_str)
 
-            for action in actions:
-                action_event = ActionEvent(source="agent", action=action)
+            for action, tool_name, params in parsed_results:
+                action_event = self._create_action_event(
+                    action=action,
+                    tool_name=tool_name,
+                    arguments=json.dumps(params),
+                    thought_text=f"Executing {tool_name}",
+                )
                 on_event(action_event)
 
-            if not actions:
+            if not parsed_results:
                 # No action detected, prompt user
                 error_msg = MessageEvent(
                     source="user",
@@ -348,6 +443,9 @@ class OHCodeActAgent(Agent):
     def _convert_messages_to_dict(self, llm_messages: List[Message]) -> List[dict]:
         """Convert SDK Message objects to dict format for tokenizer.
 
+        Injects tool descriptions into the system message for models that
+        don't support native function calling (e.g., Qwen2.5-Instruct).
+
         Args:
             llm_messages: List of SDK Message objects.
 
@@ -360,32 +458,172 @@ class OHCodeActAgent(Agent):
             for c in msg.content:
                 if isinstance(c, TextContent):
                     content += c.text
+
+            # Inject tool descriptions into system message for non-function-calling models
+            if msg.role == "system":
+                tools_as_dicts = self._get_tools_as_dicts()
+                if tools_as_dicts:
+                    tools_desc = convert_tools_to_description(tools_as_dicts)
+                    content += SYSTEM_PROMPT_SUFFIX_TEMPLATE.format(description=tools_desc)
+
             messages.append({
                 "role": msg.role,
                 "content": content,
             })
         return messages
 
-    def _parse_actions_from_response(self, response: str) -> List:
+    def _get_tools_as_dicts(self) -> List[dict]:
+        """Convert agent tools to OpenAI-style tool dictionaries.
+
+        Tries to use tools_map (after initialization) for full tool definitions,
+        falls back to basic tool info if not available.
+
+        Returns:
+            List of tool dictionaries in OpenAI function calling format.
+        """
+        tools_list = []
+
+        # Try to get full tool definitions from tools_map (available after init)
+        try:
+            if hasattr(self, 'tools_map'):
+                tools_map = self.tools_map
+                for name, tool_def in tools_map.items():
+                    if hasattr(tool_def, 'to_openai_tool'):
+                        openai_tool = tool_def.to_openai_tool()
+                        tools_list.append(openai_tool)
+                if tools_list:
+                    return tools_list
+        except RuntimeError:
+            # Agent not initialized yet, fall back to basic info
+            pass
+        except Exception as e:
+            logger.warning(f"Error getting tools from tools_map: {e}")
+
+        # Fall back to basic tool info from self.tools
+        for tool in self.tools:
+            tool_dict = {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": f"Tool: {tool.name}",  # Basic fallback description
+                    "parameters": tool.params if hasattr(tool, 'params') else {},
+                }
+            }
+            tools_list.append(tool_dict)
+        return tools_list
+
+    def _parse_actions_from_response(self, response: str) -> List[tuple]:
         """Parse tool calls/actions from the response.
+
+        Parses XML-style function calls in the format:
+        <function=name>
+        <parameter=param1>value1</parameter>
+        </function>
 
         Args:
             response: The LLM response string.
 
         Returns:
-            List of parsed actions.
+            List of tuples: (action, tool_name, params_dict)
         """
-        # Use SDK's tool parsing if available
-        # For now, check for finish action
-        actions = []
+        import json
+        results = []
 
-        if "<finish>" in response.lower() or "finish(" in response.lower():
-            actions.append(FinishAction())
+        # Parse XML-style function call
+        fn_match = re.search(FN_REGEX_PATTERN, response, re.DOTALL)
+        if fn_match:
+            fn_name = fn_match.group(1)
+            fn_body = fn_match.group(2)
 
-        # TODO: Parse other tool calls from response
-        # The SDK should handle this through its tool system
+            # Parse parameters
+            params = {}
+            for param_match in re.finditer(FN_PARAM_REGEX_PATTERN, fn_body, re.DOTALL):
+                param_name = param_match.group(1)
+                param_value = param_match.group(2).strip()
+                params[param_name] = param_value
 
-        return actions
+            # Convert to OpenHands SDK Action
+            action = self._create_action_from_parsed(fn_name, params)
+            if action:
+                results.append((action, fn_name, params))
+                logger.info(f"Parsed action: {fn_name} with params: {list(params.keys())}")
+
+        # Fallback: check for finish action in other formats
+        if not results:
+            if "<finish>" in response.lower() or "finish(" in response.lower():
+                results.append((FinishAction(message="Task completed."), "finish", {"message": "Task completed."}))
+
+        return results
+
+    def _create_action_from_parsed(self, fn_name: str, params: dict):
+        """Convert parsed function call to OpenHands SDK Action.
+
+        Args:
+            fn_name: The function name.
+            params: Dictionary of parameter name to value.
+
+        Returns:
+            An OpenHands SDK Action object, or None if unknown function.
+        """
+        # Handle finish action
+        # FinishAction requires 'message' field (not 'thought')
+        # Support both 'message' and 'thought' params from model output for flexibility
+        if fn_name == "finish":
+            message = params.get("message", params.get("thought", "Task completed."))
+            return FinishAction(message=message)
+
+        # Handle bash/terminal/command execution
+        # Support: terminal (current config), execute_bash, bash, cmd_run (legacy names)
+        if fn_name in ("terminal", "execute_bash", "bash", "cmd_run"):
+            from openhands.sdk.tool.builtins import CmdRunAction
+            return CmdRunAction(command=params.get("command", ""))
+
+        # Handle file editing
+        # Support: file_editor (current config), str_replace_editor (legacy name)
+        if fn_name in ("file_editor", "str_replace_editor"):
+            from openhands.sdk.tool.builtins import FileEditAction
+            command = params.get("command", "view")
+            return FileEditAction(
+                path=params.get("path", ""),
+                command=command,
+                file_text=params.get("file_text"),
+                old_str=params.get("old_str"),
+                new_str=params.get("new_str"),
+                view_range=params.get("view_range"),
+                insert_line=int(params["insert_line"]) if params.get("insert_line") else None,
+            )
+
+        # Handle task tracker tool
+        # This is informational - log and continue (no action execution needed)
+        if fn_name == "task_tracker":
+            logger.info(f"Task tracker action: {params}")
+            return None
+
+        # Handle think action
+        # Think is typically just logged, not executed
+        if fn_name == "think":
+            logger.info(f"Think action: {params.get('thought', '')}")
+            return None
+
+        # Handle search actions
+        if fn_name in ("search_dir", "search_file", "find_file"):
+            from openhands.sdk.tool.builtins import CmdRunAction
+            if fn_name == "search_dir":
+                search_term = params.get("search_term", "")
+                dir_path = params.get("dir", ".")
+                cmd = f"grep -rn '{search_term}' {dir_path}"
+            elif fn_name == "search_file":
+                search_term = params.get("search_term", "")
+                file_path = params.get("file", "")
+                cmd = f"grep -n '{search_term}' {file_path}"
+            else:  # find_file
+                file_name = params.get("file_name", "")
+                dir_path = params.get("dir", ".")
+                cmd = f"find {dir_path} -name '{file_name}'"
+            return CmdRunAction(command=cmd)
+
+        logger.warning(f"Unknown function: {fn_name}")
+        return None
 
     def _execute_actions(
         self,
@@ -456,7 +694,11 @@ class OHCodeActAgent(Agent):
         """Close the agent and release resources."""
         if self._workspace:
             try:
-                self._workspace.close()
+                # APIRemoteWorkspace uses cleanup() instead of close()
+                if hasattr(self._workspace, 'cleanup'):
+                    self._workspace.cleanup()
+                elif hasattr(self._workspace, 'close'):
+                    self._workspace.close()
             except Exception as e:
                 logger.warning(f"Error closing workspace: {e}")
             object.__setattr__(self, '_workspace', None)

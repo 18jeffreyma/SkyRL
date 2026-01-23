@@ -142,6 +142,18 @@ def run_ppo(config) -> None:
             # export LD_LIBRARY_PATH path from driver process, needed for EFA on Anyscale rn
             print("Exporting `LD_LIBRARY_PATH` from driver")
             PPO_RAY_RUNTIME_ENV["env_vars"].update({"LD_LIBRARY_PATH": os.environ["LD_LIBRARY_PATH"]})
+        # Export TRITON_LIBCUDA_PATH for Triton JIT compilation (direct path to libcuda.so)
+        # This is the preferred method as Triton checks this env var first
+        if os.environ.get("TRITON_LIBCUDA_PATH", None):
+            print(f"Exporting `TRITON_LIBCUDA_PATH` from driver: {os.environ['TRITON_LIBCUDA_PATH']}")
+            PPO_RAY_RUNTIME_ENV["env_vars"].update({"TRITON_LIBCUDA_PATH": os.environ["TRITON_LIBCUDA_PATH"]})
+        # Export LIBRARY_PATH and LDFLAGS for Triton JIT compilation (needed to find libcuda.so at link time)
+        if os.environ.get("LIBRARY_PATH", None):
+            print("Exporting `LIBRARY_PATH` from driver (for Triton compilation)")
+            PPO_RAY_RUNTIME_ENV["env_vars"].update({"LIBRARY_PATH": os.environ["LIBRARY_PATH"]})
+        if os.environ.get("LDFLAGS", None):
+            print("Exporting `LDFLAGS` from driver (for Triton compilation)")
+            PPO_RAY_RUNTIME_ENV["env_vars"].update({"LDFLAGS": os.environ["LDFLAGS"]})
 
         # Export SANDBOX_REMOTE_RUNTIME_API_URL for remote runtime connections
         # This is set by the SLURM job coordination scripts (slurm/jobs/verl_training.sbatch)
@@ -154,6 +166,12 @@ def run_ppo(config) -> None:
         if os.environ.get("ALLHANDS_API_KEY", None):
             print("Exporting `ALLHANDS_API_KEY` from driver", flush=True)
             PPO_RAY_RUNTIME_ENV["env_vars"].update({"ALLHANDS_API_KEY": os.environ["ALLHANDS_API_KEY"]})
+
+        # Export UV_PYTHON so uv on workers uses the correct Python interpreter
+        # This ensures Triton JIT compilation can find Python.h headers
+        if os.environ.get("UV_PYTHON", None):
+            print(f"Exporting `UV_PYTHON` from driver: {os.environ['UV_PYTHON']}", flush=True)
+            PPO_RAY_RUNTIME_ENV["env_vars"].update({"UV_PYTHON": os.environ["UV_PYTHON"]})
 
         print(f"[DEBUG main()] About to call ray.init() with env_vars: {list(PPO_RAY_RUNTIME_ENV.get('env_vars', {}).keys())}", flush=True)
         ray.init(

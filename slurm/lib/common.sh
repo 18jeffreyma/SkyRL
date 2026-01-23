@@ -443,8 +443,39 @@ setup_cuda_for_triton() {
         log_info "  LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"
     else
         log_warn "Could not find CUDA libraries - Triton JIT may fail"
-        # Set fallback to disable Triton-based ops
-        export VERL_DISABLE_FLASH_ATTN_CE=1
-        log_info "Set VERL_DISABLE_FLASH_ATTN_CE=1 as fallback"
+    fi
+}
+
+# Set up Python interpreter for uv (ensures Python.h headers are available)
+# This is needed for Triton JIT compilation which requires Python development headers
+setup_python_for_uv() {
+    log_info "Setting up Python for uv (JIT compilation requires Python headers)..."
+
+    # Load Python module that includes development headers
+    if command -v module &>/dev/null; then
+        module load python/3.12.11-fasrc01 2>/dev/null || \
+        module load python/3.12.8-fasrc01 2>/dev/null || \
+        module load python 2>/dev/null || true
+    fi
+
+    # Get the Python executable path
+    local python_path
+    python_path=$(which python3 2>/dev/null || echo "")
+
+    if [[ -n "${python_path}" ]]; then
+        # Verify this Python has headers
+        local include_path
+        include_path=$(python3 -c 'import sysconfig; print(sysconfig.get_path("include"))' 2>/dev/null || echo "")
+
+        if [[ -n "${include_path}" ]] && [[ -f "${include_path}/Python.h" ]]; then
+            export UV_PYTHON="${python_path}"
+            log_info "UV_PYTHON set to: ${UV_PYTHON}"
+            log_info "Python headers at: ${include_path}"
+        else
+            log_warn "Python at ${python_path} does not have development headers"
+            log_warn "Triton JIT compilation may fail"
+        fi
+    else
+        log_warn "Could not find Python executable"
     fi
 }

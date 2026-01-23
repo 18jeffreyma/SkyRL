@@ -115,6 +115,9 @@ main() {
     # Set up CUDA for Triton JIT compilation (before any Python runs)
     setup_cuda_for_triton
 
+    # Set up Python for uv (ensures Python.h headers are available for Triton)
+    setup_python_for_uv
+
     # Wait for runtime URL
     log_info "Waiting for runtime server to be ready..."
     local runtime_url
