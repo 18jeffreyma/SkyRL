@@ -1,0 +1,3 @@
+[submodule "slurm-remote-runtime"]
+	path = slurm-remote-runtime
+	url = https://github.com/18jeffreyma/slurm-remote-runtime

@@ -182,28 +182,23 @@ async def initialize_workspace_commands(workspace: APIRemoteWorkspace, instance:
             output = get_command_output(result)
             assert_and_raise(result.exit_code == 0, f"Failed to run entry script: {output}")
 
-    # Change to workspace directory
-    result = workspace.execute_command(f"cd {workspace_dir_name}", timeout=600)
-    output = get_command_output(result)
-    assert_and_raise(result.exit_code == 0, f"Failed to cd to {workspace_dir_name}: {output}")
-
-    # Git operations for swe-smith
+    # Git operations for swe-smith (use cwd parameter since execute_command runs in separate shells)
     if dataset == "swe-smith":
-        result = workspace.execute_command("git fetch", timeout=600)
+        result = workspace.execute_command("git fetch", cwd=workspace_dir_name, timeout=600)
         output = get_command_output(result)
         assert_and_raise(result.exit_code == 0, f"Failed to git fetch: {output}")
 
-        result = workspace.execute_command(f'git checkout {instance["instance_id"]}', timeout=600)
+        result = workspace.execute_command(f'git checkout {instance["instance_id"]}', cwd=workspace_dir_name, timeout=600)
         output = get_command_output(result)
         assert_and_raise(result.exit_code == 0, f'Failed to git checkout: {output}')
 
     # Reset and clean git for non-r2e datasets
     if "r2e-gym" not in dataset:
-        result = workspace.execute_command("git reset --hard", timeout=600)
+        result = workspace.execute_command("git reset --hard", cwd=workspace_dir_name, timeout=600)
         output = get_command_output(result)
         assert_and_raise(result.exit_code == 0, f"Failed to git reset: {output}")
 
-        result = workspace.execute_command('for remote_name in $(git remote); do git remote remove "${remote_name}"; done', timeout=600)
+        result = workspace.execute_command('for remote_name in $(git remote); do git remote remove "${remote_name}"; done', cwd=workspace_dir_name, timeout=600)
         output = get_command_output(result)
         assert_and_raise(result.exit_code == 0, f"Failed to remove git remotes: {output}")
 
