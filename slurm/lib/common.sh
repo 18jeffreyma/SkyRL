@@ -272,3 +272,179 @@ setup_graceful_shutdown() {
 
     trap _shutdown_handler SIGTERM SIGINT
 }
+
+# ============================================================================
+# Podman Isolation Functions
+# ============================================================================
+
+# Set up isolated podman storage for this SLURM job
+# This prevents state corruption between jobs by using job-specific directories
+setup_isolated_podman_storage() {
+    local job_id="${SLURM_JOB_ID:-$$}"
+    local unique_id="${job_id}_${SLURM_ARRAY_TASK_ID:-0}"
+
+    log_info "Setting up isolated podman environment for job ${unique_id}"
+
+    # Create job-specific podman directories in /tmp (local storage) FIRST
+    # We need these directories before any cleanup operations
+    local podman_root="/tmp/podman-${USER}-${job_id}"
+    mkdir -p "${podman_root}/storage"
+    mkdir -p "${podman_root}/run"
+    mkdir -p "${podman_root}/config"
+    mkdir -p "${podman_root}/data/containers"  # For XDG_DATA_HOME redirect
+
+    # CRITICAL: Set XDG_DATA_HOME to redirect ~/.local/share to /tmp
+    # This prevents podman/buildx from using NFS-mounted home directory
+    export XDG_DATA_HOME="${podman_root}/data"
+    log_info "Set XDG_DATA_HOME=${XDG_DATA_HOME} (redirects ~/.local/share)"
+
+    # Set TMPDIR to job-specific local storage
+    export TMPDIR="/tmp/${USER}/${unique_id}"
+    mkdir -p "${TMPDIR}"
+    log_info "Set TMPDIR=${TMPDIR}"
+
+    # Clean up stale podman state from previous jobs
+    log_info "Cleaning up stale podman/container state..."
+    rm -rf /scratch/${USER}/containers 2>/dev/null || true
+    rm -rf /scratch/${USER}/podman* 2>/dev/null || true
+    rm -rf /var/tmp/containers-user-$(id -u) 2>/dev/null || true
+    rm -rf /tmp/containers-user-$(id -u) 2>/dev/null || true
+    rm -rf /tmp/podman-run-$(id -u) 2>/dev/null || true
+    # Don't remove our current job's directory
+    for d in /tmp/podman-${USER}-*; do
+        if [[ "$d" != "${podman_root}" ]]; then
+            rm -rf "$d" 2>/dev/null || true
+        fi
+    done
+    rm -rf /tmp/containers-${USER} 2>/dev/null || true
+    # Critical: Clean up libpod local files that can override storage driver settings
+    # Clean up the ENTIRE ~/.local/share/containers directory to prevent any cached state
+    rm -rf "${HOME}/.local/share/containers" 2>/dev/null || true
+
+    # Reset podman to clean state
+    log_info "Resetting podman to clean state..."
+    podman system migrate 2>/dev/null || true
+    podman system reset -f 2>/dev/null || true
+    podman system prune -f -a 2>/dev/null || true
+
+    # Create storage.conf for this job pointing to /tmp (local disk)
+    # Use overlay driver for better performance (copy-on-write vs full copies)
+    # /tmp is local storage so xattr should be supported
+    cat > "${podman_root}/config/storage.conf" << EOF
+[storage]
+driver = "overlay"
+graphroot = "${podman_root}/storage"
+runroot = "${podman_root}/run"
+
+[storage.options.overlay]
+mount_program = "/usr/bin/fuse-overlayfs"
+EOF
+
+    # Point podman to our config
+    export CONTAINERS_STORAGE_CONF="${podman_root}/config/storage.conf"
+    export XDG_RUNTIME_DIR="${podman_root}/run"
+
+    # Socket for this job
+    export PODMAN_SOCKET="${podman_root}/podman.sock"
+
+    # Store the root for cleanup
+    export _PODMAN_ISOLATION_ROOT="${podman_root}"
+
+    log_info "Podman isolation configured:"
+    log_info "  CONTAINERS_STORAGE_CONF=${CONTAINERS_STORAGE_CONF}"
+    log_info "  XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
+    log_info "  XDG_DATA_HOME=${XDG_DATA_HOME}"
+    log_info "  PODMAN_SOCKET=${PODMAN_SOCKET}"
+    log_info "  TMPDIR=${TMPDIR}"
+}
+
+# Clean up isolated podman storage
+# Call this in cleanup functions or traps
+cleanup_isolated_podman_storage() {
+    local podman_root="${_PODMAN_ISOLATION_ROOT:-}"
+
+    if [[ -z "${podman_root}" ]]; then
+        log_debug "No podman isolation root set, skipping cleanup"
+        return 0
+    fi
+
+    log_info "Cleaning up podman storage at ${podman_root}"
+
+    # Stop all containers gracefully
+    podman stop --all --time 5 2>/dev/null || true
+
+    # Remove all containers
+    podman rm --all --force 2>/dev/null || true
+
+    # Clean up the isolated directory
+    rm -rf "${podman_root}" 2>/dev/null || true
+
+    log_info "Podman storage cleanup complete"
+}
+
+# ============================================================================
+# CUDA/Triton Setup Functions
+# ============================================================================
+
+# Set up CUDA environment for Triton JIT compilation
+# This function probes for CUDA libraries and sets necessary environment variables
+setup_cuda_for_triton() {
+    log_info "Setting up CUDA for Triton JIT compilation..."
+
+    local cuda_lib=""
+
+    # Check common locations for libcuda.so
+    for path in "/usr/lib64/libcuda.so.1" "/usr/lib64/libcuda.so" \
+                "/usr/local/cuda/lib64/stubs/libcuda.so" \
+                "/usr/local/cuda/lib64/libcuda.so"; do
+        if [[ -f "${path}" ]]; then
+            cuda_lib="$(dirname "${path}")"
+            log_info "Found CUDA library at ${path}"
+            break
+        fi
+    done
+
+    # Try module load as fallback
+    if [[ -z "${cuda_lib}" ]] && command -v module &>/dev/null; then
+        log_info "CUDA not found in standard paths, trying module load..."
+        module load cuda/12.4.0-fasrc01 2>/dev/null || \
+        module load cuda/12.2.0-fasrc01 2>/dev/null || \
+        module load cuda 2>/dev/null || true
+
+        # Check if module load provided CUDA_HOME
+        if [[ -n "${CUDA_HOME:-}" ]] && [[ -d "${CUDA_HOME}/lib64" ]]; then
+            cuda_lib="${CUDA_HOME}/lib64"
+            log_info "CUDA module loaded, using ${cuda_lib}"
+        fi
+    fi
+
+    if [[ -n "${cuda_lib}" ]]; then
+        export TRITON_LIBCUDA_PATH="${cuda_lib}"
+        export LD_LIBRARY_PATH="${cuda_lib}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        export LIBRARY_PATH="${cuda_lib}${LIBRARY_PATH:+:$LIBRARY_PATH}"
+
+        # Create symlink for Triton's hardcoded /lib64 lookup if needed
+        if [[ ! -f "/lib64/libcuda.so" ]] && [[ -w "/tmp" ]]; then
+            mkdir -p /tmp/triton_cuda_lib
+            local libcuda_src=""
+            if [[ -f "${cuda_lib}/libcuda.so.1" ]]; then
+                libcuda_src="${cuda_lib}/libcuda.so.1"
+            elif [[ -f "${cuda_lib}/libcuda.so" ]]; then
+                libcuda_src="${cuda_lib}/libcuda.so"
+            fi
+            if [[ -n "${libcuda_src}" ]]; then
+                ln -sf "${libcuda_src}" /tmp/triton_cuda_lib/libcuda.so 2>/dev/null || true
+                export LIBRARY_PATH="/tmp/triton_cuda_lib:${LIBRARY_PATH}"
+            fi
+        fi
+
+        log_info "CUDA configured for Triton:"
+        log_info "  TRITON_LIBCUDA_PATH=${TRITON_LIBCUDA_PATH}"
+        log_info "  LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"
+    else
+        log_warn "Could not find CUDA libraries - Triton JIT may fail"
+        # Set fallback to disable Triton-based ops
+        export VERL_DISABLE_FLASH_ATTN_CE=1
+        log_info "Set VERL_DISABLE_FLASH_ATTN_CE=1 as fallback"
+    fi
+}

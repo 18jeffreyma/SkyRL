@@ -34,6 +34,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 
+# Note: CUDA/Triton setup is now handled by setup_cuda_for_triton() in main()
+# This centralizes CUDA library detection and configuration
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -108,6 +111,9 @@ main() {
 
     # Set up graceful shutdown
     setup_graceful_shutdown cleanup
+
+    # Set up CUDA for Triton JIT compilation (before any Python runs)
+    setup_cuda_for_triton
 
     # Wait for runtime URL
     log_info "Waiting for runtime server to be ready..."
@@ -247,7 +253,8 @@ main() {
         actor_rollout_ref.rollout.free_cache_engine=True \
         actor_rollout_ref.rollout.name=vllm \
         actor_rollout_ref.rollout.mode=async \
-        actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+        actor_rollout_ref.rollout.gpu_memory_utilization="${GPU_MEMORY_UTILIZATION:-0.8}" \
+        actor_rollout_ref.rollout.max_model_len="${MAX_MODEL_LEN:-32768}" \
         actor_rollout_ref.rollout.n="${ROLLOUT_N}" \
         actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
         actor_rollout_ref.ref.fsdp_config.param_offload=True \

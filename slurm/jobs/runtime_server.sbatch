@@ -7,6 +7,7 @@
 #SBATCH --cpus-per-task=${CPUS_FOR_RUNTIME:-64}
 #SBATCH --mem=${RUNTIME_MEMORY:-256G}
 #SBATCH --time=${TIME_LIMIT:-12:00:00}
+#SBATCH --exclude=${EXCLUDE_NODES:-}
 
 # ============================================================================
 # SkyRL Runtime Server Job
@@ -82,8 +83,8 @@ cleanup() {
         wait "${PODMAN_SERVICE_PID}" 2>/dev/null || true
     fi
 
-    # Clean up Podman socket file
-    rm -f "/tmp/podman-${USER}-${SLURM_JOB_ID}.sock" 2>/dev/null || true
+    # Clean up isolated podman storage
+    cleanup_isolated_podman_storage
 
     log_info "Runtime server cleanup complete"
 }
@@ -118,20 +119,33 @@ main() {
         log_warn "No venv found, using system Python"
     fi
 
-    # Start Podman service for Docker-compatible API (needed for image building)
-    # This exposes a socket that docker-py can connect to
-    # Use /tmp since /run/user/ is not writable on SLURM nodes
-    local podman_socket="/tmp/podman-${USER}-${SLURM_JOB_ID}.sock"
+    # Set up isolated podman storage for this job
+    # This prevents state corruption between SLURM jobs by using job-specific directories
+    setup_isolated_podman_storage
+
+    # Use the job-specific socket from isolation setup
+    local podman_socket="${PODMAN_SOCKET}"
+
+    # Clean up stale worker logs from previous jobs
+    rm -f /scratch/worker_*.log 2>/dev/null || true
+    rm -f "${SCRATCH:-/scratch}/worker_*.log" 2>/dev/null || true
 
     # Start podman system service in background (--time=0 means no timeout)
     podman system service --time=0 "unix://${podman_socket}" &
     PODMAN_SERVICE_PID=$!
-    sleep 2  # Give it time to start
+    sleep 3  # Give it time to start (increased from 2s)
 
     if [[ -S "${podman_socket}" ]]; then
         export DOCKER_HOST="unix://${podman_socket}"
         log_info "Started Podman service at ${podman_socket}"
         log_info "Set DOCKER_HOST=${DOCKER_HOST}"
+
+        # Verify Podman is actually working by listing images
+        if podman images >/dev/null 2>&1; then
+            log_info "Podman verification successful"
+        else
+            log_warn "Podman socket exists but 'podman images' failed - image building may have issues"
+        fi
 
         # Authenticate with Docker Hub for pulling private r2e images
         local docker_token_file="${HOME}/dockerhub_token.txt"
@@ -144,7 +158,8 @@ main() {
             log_warn "Docker token file not found at ${docker_token_file}, private images may fail to pull"
         fi
     else
-        log_warn "Failed to start Podman service, image building may not work"
+        log_warn "Failed to start Podman service (socket not created), image building may not work"
+        log_warn "Attempting to continue anyway - pre-built images may still work"
     fi
 
     # Determine the API URL
@@ -174,7 +189,7 @@ main() {
         --build-reserved-cpus 4 \
         --cpus-per-worker "${CPUS_PER_WORKER}" \
         --memory-per-worker "${MEMORY_PER_WORKER}" \
-        --cpu-pinning-method taskset \
+        --cpu-pinning-method docker_cpuset \
         --worker-startup-timeout 600 \
         --verbose &
 

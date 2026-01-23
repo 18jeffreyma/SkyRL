@@ -161,6 +161,7 @@ create_runtime_sbatch_override() {
 #SBATCH --cpus-per-task=${CPUS_FOR_RUNTIME}
 #SBATCH --mem=${RUNTIME_MEMORY}
 #SBATCH --time=${TIME_LIMIT}
+${EXCLUDE_NODES:+#SBATCH --exclude=${EXCLUDE_NODES}}
 
 # Export coordination directory
 export SKYRL_COORD_DIR="${coord_dir}"
@@ -170,6 +171,7 @@ export MEMORY_PER_WORKER="${MEMORY_PER_WORKER:-16G}"
 export CONTAINER_IMAGE="${CONTAINER_IMAGE:-ghcr.io/opendevin/sandbox:main}"
 export RUNTIME_PORT="${RUNTIME_PORT:-8000}"
 export ALLHANDS_API_KEY="${ALLHANDS_API_KEY:-}"
+export EXCLUDE_NODES="${EXCLUDE_NODES:-}"
 
 # Run the actual runtime script
 exec "${SCRIPT_DIR}/jobs/runtime_server.sbatch"
