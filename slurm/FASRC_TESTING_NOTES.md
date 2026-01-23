@@ -549,7 +549,7 @@ generator:
 ## Contact and Resources
 
 - **SkyRL Repository**: `/n/holylabs/janapa_reddi_lab/Lab/jjma/coding-agent-rl/SkyRL`
-- **Runtime Repository**: `/n/holylabs/janapa_reddi_lab/Lab/jjma/coding-agent-rl/slurm-remote-runtime`
+- **Runtime Repository**: `/n/holylabs/janapa_reddi_lab/Lab/jjma/coding-agent-rl/SkyRL/slurm-remote-runtime`
 - **Data Location**: `/n/netscratch/janapa_reddi_lab/Lab/jjma/data/r2e-all/`
 - **Checkpoint Location**: `/n/netscratch/janapa_reddi_lab/Lab/jjma/ckpts/skyrl-dev/`
 - **WandB Project**: https://wandb.ai/jeffreyma/skyrl-dev

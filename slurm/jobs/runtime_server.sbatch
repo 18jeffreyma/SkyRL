@@ -44,7 +44,7 @@ MEMORY_PER_WORKER="${MEMORY_PER_WORKER:-16G}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-ghcr.io/opendevin/sandbox:main}"
 
 # Paths
-SLURM_RUNTIME_DIR="${SKYRL_PROJECT_ROOT}/slurm-remote-runtime"
+SLURM_RUNTIME_DIR="${SKYRL_PROJECT_ROOT}/SkyRL/slurm-remote-runtime"
 
 # Disable API authentication for simplicity in SLURM environment
 # Both runtime and training jobs run in same trusted environment

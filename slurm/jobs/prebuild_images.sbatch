@@ -36,7 +36,7 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 IMAGE_PREFIX="${IMAGE_PREFIX:-docker.io/xingyaoww/}"
 MAX_WORKERS="${MAX_WORKERS:-2}"
 FORCE_REBUILD="${FORCE_REBUILD:-false}"
-SLURM_RUNTIME_DIR="${SKYRL_PROJECT_ROOT}/slurm-remote-runtime"
+SLURM_RUNTIME_DIR="${SKYRL_PROJECT_ROOT}/SkyRL/slurm-remote-runtime"
 
 # ============================================================================
 # Validation
