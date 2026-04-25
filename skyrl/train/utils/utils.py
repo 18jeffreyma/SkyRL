@@ -709,7 +709,15 @@ def prepare_runtime_environment(cfg: SkyRLTrainConfig) -> dict[str, str]:
         logger.info(f"Exporting `SKYRL_RAY_PG_TIMEOUT_IN_S` to ray runtime env: {pg_timeout}")
         env_vars["SKYRL_RAY_PG_TIMEOUT_IN_S"] = pg_timeout
 
+    _propagate_arctic_env_vars(env_vars)
     return env_vars
+
+
+def _propagate_arctic_env_vars(env_vars: dict) -> None:
+    """Propagate ARCTIC_* env vars to the Ray runtime so actors see them."""
+    for key, val in os.environ.items():
+        if key.startswith("ARCTIC_"):
+            env_vars[key] = val
 
 
 def configure_ray_worker_logging() -> None:

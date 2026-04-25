@@ -152,6 +152,10 @@ miniswe = [
 harbor = [
     "harbor[daytona,modal]; python_version >= '3.12'",
 ]
+arctic-rl = [
+    "skyrl[skyrl-train]",
+    "arctic_training",
+]
 
 dev = [
     "mkdocs",

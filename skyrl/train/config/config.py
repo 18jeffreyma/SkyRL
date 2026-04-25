@@ -193,6 +193,55 @@ class PlacementConfig(BaseConfig):
 
 
 # ---------------------------------------------------------------------------
+# Arctic RL backend
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ArcticRLTrainerConfig(BaseConfig):
+    """Arctic RL (DeepSpeed) backend settings.
+
+    Only contains params that are unique to the Arctic RL server and have
+    no equivalent in the standard SkyRL config.  Shared knobs are derived
+    automatically by ``build_rl_config``:
+
+    ============== ================================================
+    ARL concept    Derived from
+    ============== ================================================
+    training_gpus  ``trainer.placement.policy_num_gpus_per_node``
+                   ``* trainer.placement.policy_num_nodes``
+    sampling_gpus  ``generator.inference_engine.num_engines``
+    vllm mem/TP    ``generator.inference_engine.*``
+    ============== ================================================
+    """
+
+    colocate: bool = False
+    """Share GPUs between training and inference on the ARL server.
+
+    This is distinct from ``trainer.placement.colocate_all`` which controls
+    Ray placement groups.  ARL colocation is server-side GPU sharing managed
+    by the Arctic RL server — ``colocate_all`` must stay ``false`` when
+    using the ARL backend.
+    """
+    use_zorro: bool = False
+    """Enable ZoRRO (prompt deduplication) on the training server."""
+    zero_stage: int = 0
+    """DeepSpeed ZeRO stage (0, 2, or 3)."""
+    log_prob_gpus: int = 0
+    """Number of GPUs for log-prob computation (0 = skip separate log-prob)."""
+    host: str = "localhost"
+    """Arctic RL server hostname."""
+    port: int = 7000
+    """Arctic RL server port."""
+    startup_timeout: float = 600
+    """Seconds to wait for server readiness."""
+    server_logs: bool = False
+    """Enable verbose server logging."""
+    offload_optimizer: bool = False
+    """Offload optimizer to CPU. Applicable to ZeRO stage 2 and 3."""
+
+
+# ---------------------------------------------------------------------------
 # Policy / Critic / Ref
 # ---------------------------------------------------------------------------
 
@@ -346,7 +395,7 @@ class AlgorithmConfig(BaseConfig):
     temperature: Optional[float] = None
     """Temperature for scaling logits in policy loss computation.
     If ``None``, will be set to the temperature provided by ``generator.sampling_params.temperature`` during config validation.
-    
+
     NOTE: When using HTTP endpoints directly, make sure to set this value to the temperature used during generation
     """
     advantage_batch_normalize: bool = False
@@ -465,7 +514,7 @@ class InferenceEngineConfig(BaseConfig):
     remote_urls: List[str] = field(default_factory=lambda: [])
     enable_http_endpoint: bool = False
     """When ``True``, launch an OpenAI-compatible HTTP endpoint for the inference engine client so that generators can send requests to this server instead of using ``.generate()`` Python calls.
-    
+
     NOTE: When using HTTP endpoints directly, make sure to set ``trainer.algorithm.temperature`` to the temperature used during generation
     """
     http_endpoint_host: str = "127.0.0.1"
@@ -475,7 +524,7 @@ class InferenceEngineConfig(BaseConfig):
     ``/chat/completions`` requests instead of the model path. If ``None``, the model path is used."""
     distributed_executor_backend: str = "ray"
     """Distributed executor backend for vLLM. Set to ``"ray"`` to use the Ray backend
-    or ``"mp"`` to use the multiprocessing backend (single-node serving only). Per-engine 
+    or ``"mp"`` to use the multiprocessing backend (single-node serving only). Per-engine
     placement groups are created when ``"mp"`` is used."""
     language_model_only: bool = False
     """When True, pass ``language_model_only=True`` to the vLLM engine so that
@@ -633,6 +682,9 @@ class TrainerConfig(BaseConfig):
     dump_eval_results: bool = True
     rope_scaling: Optional[Dict[str, Any]] = None
     rope_theta: Optional[float] = None
+
+    arctic_rl: Optional[ArcticRLTrainerConfig] = None
+    """Config for the Arctic RL backend.  ``None`` means the backend is not used."""
 
     def __post_init__(self):
         # ref model defaults to the policy model
