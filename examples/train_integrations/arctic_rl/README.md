@@ -14,7 +14,7 @@ SkyRL Client (CPU-only, ray num_gpus=0)
         v
 Arctic RL Server (own Ray cluster, all GPUs)
   - DeepSpeed Workers: forward/backward, GRPO loss, optimizer step
-  - vLLM Replicas: generation, log-probs
+  - ArcticInference (vLLM) Replicas: generation, log-probs
   - NCCL weight sync between training and inference
 ```
 
@@ -22,7 +22,7 @@ Arctic RL Server (own Ray cluster, all GPUs)
 
 ### Arctic RL Server Backend (this integration)
 
-**Setup**: Qwen2.5-1.5B-Instruct, 4 DeepSpeed training GPUs + 2 vLLM sampling GPUs + 1 log-prob GPU (7x H200), GRPO with 5 samples/prompt.
+**Setup**: Qwen2.5-1.5B-Instruct, 4 DeepSpeed training GPUs + 2 ArcticInference (vLLM) sampling GPUs + 1 log-prob GPU (7x H200), GRPO with 5 samples/prompt.
 
 | Step | GSM8K Eval (pass@1) | Training Reward |
 |------|-------------------|-----------------|
@@ -59,10 +59,10 @@ cd arctic-skyrl
 git checkout arctic-rl-integration
 pip install -e ".[arctic-rl]"
 
-# Clone ArcticTraining-dss (server) — in a separate directory
+# Clone ArcticTraining (server) — in a separate directory
 cd ..
-git clone https://github.com/snowflake-eng/ArcticTraining-dss.git
-cd ArcticTraining-dss
+git clone https://github.com/snowflakedb/ArcticTraining.git
+cd ArcticTraining
 git checkout arctic-rl-grpo-loss
 pip install --no-deps -e .
 ```
@@ -81,7 +81,7 @@ bash examples/train_integrations/arctic_rl/run_gsm8k_grpo_arctic.sh
 ```
 
 This will:
-1. Start an Arctic RL server (DeepSpeed + vLLM) on localhost
+1. Start an Arctic RL server (DeepSpeed + ArcticInference) on localhost
 2. Initialize a CPU-only SkyRL client via Ray
 3. Run GRPO training on GSM8K with eval every 5 steps
 4. Log to console (set `LOGGER=wandb` for W&B)
@@ -103,8 +103,8 @@ nvidia-smi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ARCTIC_TRAINING_GPUS` | 4 | DeepSpeed training workers (DP) |
-| `ARCTIC_SAMPLE_GPUS` | 2 | vLLM sampling replicas |
-| `ARCTIC_LOG_PROB_GPUS` | 1 | vLLM log-prob engine |
+| `ARCTIC_SAMPLE_GPUS` | 2 | ArcticInference (vLLM) sampling replicas |
+| `ARCTIC_LOG_PROB_GPUS` | 1 | ArcticInference (vLLM) log-prob engine |
 | `ARCTIC_SERVER_PORT` | 7000 | Server HTTP port |
 | `ARCTIC_SERVER_LOGS` | 0 | Set to 1 for verbose server output |
 | `ARCTIC_STARTUP_TIMEOUT` | 600 | Server startup timeout (seconds) |
@@ -167,4 +167,4 @@ examples/train_integrations/arctic_rl/
 ## Companion PRs
 
 - **Client (this repo)**: [`arctic-rl-integration`](https://github.com/snowflake-eng/arctic-skyrl/compare/arctic-rl-integration) branch
-- **Server (ArcticTraining-dss)**: [`arctic-rl-grpo-loss`](https://github.com/snowflake-eng/ArcticTraining-dss/compare/arctic-rl-grpo-loss) branch — PR [#20](https://github.com/snowflake-eng/ArcticTraining-dss/pull/20)
+- **Server (ArcticTraining-dss)**: [`arctic-rl-grpo-loss`](https://github.com/snowflakedb/ArcticTraining/compare/arctic-rl-grpo-loss) branch — PR [#20](https://github.com/snowflakedb/ArcticTraining/pull/20)
