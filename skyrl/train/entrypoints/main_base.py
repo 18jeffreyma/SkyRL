@@ -476,6 +476,14 @@ def main() -> None:
     # Parse CLI args and build typed config
     cfg = SkyRLTrainConfig.from_cli_overrides(sys.argv[1:])
 
+    # Route to Arctic RL entrypoint if arctic_rl backend is configured.
+    # This allows users to switch backends via config alone without changing
+    # the entrypoint command.
+    if cfg.trainer.arctic_rl is not None:
+        from skyrl.train.entrypoints.main_arctic_rl import main as arctic_rl_main
+        arctic_rl_main()
+        return
+
     # validate the arguments
     validate_cfg(cfg)
 

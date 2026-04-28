@@ -23,7 +23,7 @@ export PYTHONUNBUFFERED=1
 : "${MODEL:="Qwen/Qwen3-0.6B"}"
 : "${LOGGER:="console"}"
 
-python -m skyrl.train.entrypoints.main_arctic_rl \
+python -m skyrl.train.entrypoints.main_base \
   data.train_data="['${DATA_DIR}/train.parquet']" \
   data.val_data="['${DATA_DIR}/validation.parquet']" \
   trainer.arctic_rl={} \
