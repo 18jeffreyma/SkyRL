@@ -8,13 +8,9 @@ GPU layout and colocation are configured via standard SkyRL knobs;
 ARL-specific settings live under ``trainer.arctic_rl`` (see
 ``ArcticRLTrainerConfig``).
 
-Usage (colocated, 4 GPUs):
-    python -m skyrl.train.entrypoints.main_arctic_rl \\
-        trainer.arctic_rl.colocate=true \\
-        trainer.placement.policy_num_gpus_per_node=4 \\
-        generator.inference_engine.num_engines=4 \\
-        generator.inference_engine.gpu_memory_utilization=0.3 \\
-        trainer.policy.model.path=Qwen/Qwen3-0.6B
+This entrypoint is invoked indirectly by ``skyrl.train.entrypoints.main_base``
+when ``trainer.arctic_rl is not None``. Researchers should use the standard
+``main_base`` entrypoint and switch backends via config alone.
 """
 
 import os
@@ -30,8 +26,8 @@ from skyrl.train.config import SkyRLTrainConfig
 from skyrl.train.entrypoints.main_base import BasePPOExp
 from skyrl.train.utils import validate_cfg
 
-from skyrl.backends.arctic_rl import ArcticGenerator, ArcticPPOTrainer
-from skyrl.backends.arctic_rl.config import build_rl_config
+from arctic_rl_integration import ArcticGenerator, ArcticPPOTrainer
+from arctic_rl_integration.config import build_rl_config
 
 
 class ArcticRLExp(BasePPOExp):
@@ -90,7 +86,7 @@ class ArcticRLExp(BasePPOExp):
         os.makedirs(self.cfg.trainer.export_path, exist_ok=True)
         os.makedirs(self.cfg.trainer.ckpt_path, exist_ok=True)
 
-        from skyrl.backends.arctic_rl.arctic_trainer import _ArcticInferenceEngineStub
+        from arctic_rl_integration.trainer import _ArcticInferenceEngineStub
         ie_stub = _ArcticInferenceEngineStub(client=self.arctic_client)
 
         tracker = self.get_tracker()

@@ -478,9 +478,12 @@ def main() -> None:
 
     # Route to Arctic RL entrypoint if arctic_rl backend is configured.
     # This allows users to switch backends via config alone without changing
-    # the entrypoint command.
+    # the entrypoint command.  The integration code lives in a top-level
+    # ``arctic_training/`` folder (sibling of ``skyrl/``); the importable
+    # module name is ``arctic_rl_integration`` to avoid colliding with the
+    # upstream ``arctic_training`` package on PyPI.
     if cfg.trainer.arctic_rl is not None:
-        from skyrl.train.entrypoints.main_arctic_rl import main as arctic_rl_main
+        from arctic_rl_integration.entrypoint import main as arctic_rl_main
         arctic_rl_main()
         return
 
