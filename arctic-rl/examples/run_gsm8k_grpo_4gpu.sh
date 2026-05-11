@@ -54,7 +54,7 @@ python -m skyrl.train.entrypoints.main_base \
   generator.n_samples_per_prompt=4 \
   generator.inference_engine.gpu_memory_utilization=0.7 \
   trainer.logger="${LOGGER}" \
-  trainer.project_name=arctic_rl_integration \
+  trainer.project_name=arctic_rl \
   trainer.run_name="skyrl_gsm8k_${MODEL##*/}" \
   trainer.resume_mode=null \
   trainer.log_path=/tmp/skyrl-arctic-logs \

@@ -2,15 +2,14 @@
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-# ``skyrl/`` is the upstream package. ``arctic_training/`` is a top-level
-# folder hosting the Arctic RL integration as the ``arctic_rl_integration``
-# Python package — folder name matches Charlie's request (sibling of
-# ``skyrl/``, like the legacy ``skyrl-tx/``); module name is intentionally
-# distinct from the upstream PyPI package ``arctic_training`` to avoid an
-# import-time collision.
+# ``skyrl/`` is the upstream package. ``arctic-rl/`` is a top-level folder
+# (sibling of ``skyrl/``, like the legacy ``skyrl-tx/``) that hosts the
+# Arctic RL integration: the importable ``arctic_rl`` Python package and
+# its ``examples/`` subdir. Hyphenated outer folder + underscore module
+# matches the ``skyrl-tx/`` -> ``skyrl.tx`` precedent.
 [tool.setuptools.packages.find]
-where = [".", "arctic_training"]
-include = ["skyrl*", "arctic_rl_integration*"]
+where = [".", "arctic-rl"]
+include = ["skyrl*", "arctic_rl*"]
 
 [project]
 name = "skyrl"

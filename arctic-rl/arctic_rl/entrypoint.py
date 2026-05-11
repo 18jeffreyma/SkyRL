@@ -26,8 +26,8 @@ from skyrl.train.config import SkyRLTrainConfig
 from skyrl.train.entrypoints.main_base import BasePPOExp
 from skyrl.train.utils import validate_cfg
 
-from arctic_rl_integration import ArcticGenerator, ArcticPPOTrainer
-from arctic_rl_integration.config import build_rl_config
+from arctic_rl import ArcticGenerator, ArcticPPOTrainer
+from arctic_rl.config import build_rl_config
 
 
 class ArcticRLExp(BasePPOExp):
@@ -86,7 +86,7 @@ class ArcticRLExp(BasePPOExp):
         os.makedirs(self.cfg.trainer.export_path, exist_ok=True)
         os.makedirs(self.cfg.trainer.ckpt_path, exist_ok=True)
 
-        from arctic_rl_integration.trainer import _ArcticInferenceEngineStub
+        from arctic_rl.trainer import _ArcticInferenceEngineStub
         ie_stub = _ArcticInferenceEngineStub(client=self.arctic_client)
 
         tracker = self.get_tracker()

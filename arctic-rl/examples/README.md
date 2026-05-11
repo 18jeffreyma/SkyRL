@@ -132,31 +132,33 @@ DeepSpeed config is set automatically:
 ## File Structure
 
 ```
-arctic_training/arctic_rl_integration/        # top-level sibling of skyrl/
-├── __init__.py                       # Exports ArcticPPOTrainer, ArcticGenerator
-├── trainer.py                        # ArcticPPOTrainer: routes training to server
-├── generator.py                      # ArcticGenerator: routes generation to server vLLM
-├── config.py                         # ArcticRLClientConfig builder
-└── entrypoint.py                     # Entrypoint: sets up client + server
+arctic-rl/                            # top-level sibling of skyrl/
+├── arctic_rl/                        # importable Python package
+│   ├── __init__.py                   # Exports ArcticPPOTrainer, ArcticGenerator
+│   ├── trainer.py                    # ArcticPPOTrainer: routes training to server
+│   ├── generator.py                  # ArcticGenerator: routes generation to server vLLM
+│   ├── config.py                     # ArcticRLClientConfig builder
+│   └── entrypoint.py                 # Entrypoint: sets up client + server
+└── examples/
+    ├── README.md                     # This file
+    ├── setup_arctic_rl.sh            # One-command env setup
+    └── run_gsm8k_grpo_4gpu.sh        # Launch script for GSM8K GRPO
 
 skyrl/train/entrypoints/
-└── main_base.py                      # 5-line shim that routes to arctic_rl_integration
+└── main_base.py                      # 5-line shim that routes to arctic_rl
                                       # when trainer.arctic_rl is set in config
-
-examples/train_integrations/arctic_rl/
-├── README.md                         # This file
-└── run_gsm8k_grpo_arctic.sh          # Launch script for GSM8K GRPO
 ```
 
-The folder is named `arctic_training/` so it sits as a top-level sibling of
-`skyrl/` (matching the legacy `skyrl-tx/` placement). The Python package
-inside is named `arctic_rl_integration` to keep it distinct from the
-upstream `arctic_training` PyPI package this integration depends on, so
-the two namespaces coexist at import time without collision.
+The outer folder is hyphenated (`arctic-rl/`) to sit as a top-level sibling
+of `skyrl/`, matching the legacy `skyrl-tx/` placement. The inner Python
+package uses underscore (`arctic_rl`, the standard Python module name
+convention). It is distinct from the upstream `arctic_training` package's
+`arctic_training.arctic_rl` sub-namespace — both coexist at import time
+without collision.
 
 ## How It Works
 
-1. **`arctic_rl_integration.entrypoint`** creates an `ArcticRLClient` which spawns the server as a subprocess with a clean environment (stripped `CUDA_VISIBLE_DEVICES` and `RAY_*` vars so the server gets its own GPU access)
+1. **`arctic_rl.entrypoint`** creates an `ArcticRLClient` which spawns the server as a subprocess with a clean environment (stripped `CUDA_VISIBLE_DEVICES` and `RAY_*` vars so the server gets its own GPU access)
 
 2. **`ArcticPPOTrainer`** overrides the standard SkyRL training loop:
    - `fwd_logprobs_values_reward` → no-op (server computes old log-probs internally)
