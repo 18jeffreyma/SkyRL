@@ -132,24 +132,31 @@ DeepSpeed config is set automatically:
 ## File Structure
 
 ```
-skyrl/backends/arctic_rl/
-├── __init__.py                      # Exports ArcticPPOTrainer, ArcticGenerator
-├── arctic_trainer.py                # ArcticPPOTrainer: routes training to server
-├── arctic_generator.py              # ArcticGenerator: routes generation to server vLLM
-└── config.py                        # ArcticRLClientConfig builder
+arctic_training/arctic_rl_integration/        # top-level sibling of skyrl/
+├── __init__.py                       # Exports ArcticPPOTrainer, ArcticGenerator
+├── trainer.py                        # ArcticPPOTrainer: routes training to server
+├── generator.py                      # ArcticGenerator: routes generation to server vLLM
+├── config.py                         # ArcticRLClientConfig builder
+└── entrypoint.py                     # Entrypoint: sets up client + server
 
 skyrl/train/entrypoints/
-├── main_arctic_rl.py                # Entrypoint: sets up client + server
-└── main_arctic_rl_fully_async.py    # Fully-async entrypoint
+└── main_base.py                      # 5-line shim that routes to arctic_rl_integration
+                                      # when trainer.arctic_rl is set in config
 
 examples/train_integrations/arctic_rl/
-├── README.md                        # This file
-└── run_gsm8k_grpo_arctic.sh         # Launch script for GSM8K GRPO
+├── README.md                         # This file
+└── run_gsm8k_grpo_arctic.sh          # Launch script for GSM8K GRPO
 ```
+
+The folder is named `arctic_training/` so it sits as a top-level sibling of
+`skyrl/` (matching the legacy `skyrl-tx/` placement). The Python package
+inside is named `arctic_rl_integration` to keep it distinct from the
+upstream `arctic_training` PyPI package this integration depends on, so
+the two namespaces coexist at import time without collision.
 
 ## How It Works
 
-1. **`main_arctic_rl.py`** creates an `ArcticRLClient` which spawns the server as a subprocess with a clean environment (stripped `CUDA_VISIBLE_DEVICES` and `RAY_*` vars so the server gets its own GPU access)
+1. **`arctic_rl_integration.entrypoint`** creates an `ArcticRLClient` which spawns the server as a subprocess with a clean environment (stripped `CUDA_VISIBLE_DEVICES` and `RAY_*` vars so the server gets its own GPU access)
 
 2. **`ArcticPPOTrainer`** overrides the standard SkyRL training loop:
    - `fwd_logprobs_values_reward` → no-op (server computes old log-probs internally)
