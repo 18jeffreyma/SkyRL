@@ -133,6 +133,7 @@ DeepSpeed config is set automatically:
 
 ```
 arctic-rl/                            # top-level sibling of skyrl/
+├── README.md                         # This file
 ├── arctic_rl/                        # importable Python package
 │   ├── __init__.py                   # Exports ArcticPPOTrainer, ArcticGenerator
 │   ├── trainer.py                    # ArcticPPOTrainer: routes training to server
@@ -140,7 +141,6 @@ arctic-rl/                            # top-level sibling of skyrl/
 │   ├── config.py                     # ArcticRLClientConfig builder
 │   └── entrypoint.py                 # Entrypoint: sets up client + server
 └── examples/
-    ├── README.md                     # This file
     ├── setup_arctic_rl.sh            # One-command env setup
     └── run_gsm8k_grpo_4gpu.sh        # Launch script for GSM8K GRPO
 
