@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 # its ``examples/`` subdir. Hyphenated outer folder + underscore module
 # matches the ``skyrl-tx/`` -> ``skyrl.tx`` precedent.
 [tool.setuptools.packages.find]
-where = [".", "arctic-rl"]
+where = [".", "integrations/arctic-rl"]
 include = ["skyrl*", "arctic_rl*"]
 
 [project]

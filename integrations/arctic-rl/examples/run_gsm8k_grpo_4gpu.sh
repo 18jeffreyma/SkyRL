@@ -2,13 +2,13 @@
 # GSM8K GRPO training via Arctic RL server.
 #
 # Non-colocated (4 GPUs: 2 training + 2 sampling):
-#   bash examples/train_integrations/arctic_rl/run_gsm8k_grpo_4gpu.sh \
+#   bash integrations/arctic-rl/examples/run_gsm8k_grpo_4gpu.sh \
 #     trainer.placement.policy_num_gpus_per_node=2 \
 #     generator.inference_engine.num_engines=2 \
 #     trainer.policy_mini_batch_size=4
 #
 # Colocated (4 GPUs: all shared between training + sampling):
-#   bash examples/train_integrations/arctic_rl/run_gsm8k_grpo_4gpu.sh \
+#   bash integrations/arctic-rl/examples/run_gsm8k_grpo_4gpu.sh \
 #     trainer.arctic_rl.colocate=true \
 #     trainer.placement.policy_num_gpus_per_node=4 \
 #     generator.inference_engine.num_engines=4 \

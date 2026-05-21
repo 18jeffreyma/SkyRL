@@ -12,7 +12,7 @@ Usage in a recipe::
 
     from arctic_rl import ArcticPPOTrainer, ArcticGenerator
 
-The folder on disk is ``arctic-rl/arctic_rl/`` — top-level sibling of
+The folder on disk is ``integrations/arctic-rl/arctic_rl/`` — top-level sibling of
 ``skyrl/`` (matching the legacy ``skyrl-tx/`` placement). The Python
 package is ``arctic_rl`` (top-level); it is distinct from the upstream
 ``arctic_training`` package (which has its own ``arctic_training.arctic_rl``
