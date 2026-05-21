@@ -132,7 +132,7 @@ DeepSpeed config is set automatically:
 ## File Structure
 
 ```
-arctic-rl/                            # top-level sibling of skyrl/
+integrations/arctic-rl/                # under integrations/, sibling of skyrl/
 ├── README.md                         # This file
 ├── arctic_rl/                        # importable Python package
 │   ├── __init__.py                   # Exports ArcticPPOTrainer, ArcticGenerator
@@ -149,7 +149,7 @@ skyrl/train/entrypoints/
                                       # when trainer.arctic_rl is set in config
 ```
 
-The outer folder is hyphenated (`arctic-rl/`) to sit as a top-level sibling
+The outer folder is at `integrations/arctic-rl/` (top-level `integrations/` namespace)
 of `skyrl/`, matching the legacy `skyrl-tx/` placement. The inner Python
 package uses underscore (`arctic_rl`, the standard Python module name
 convention). It is distinct from the upstream `arctic_training` package's
