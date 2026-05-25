@@ -476,17 +476,15 @@ def main() -> None:
     # Parse CLI args and build typed config
     cfg = SkyRLTrainConfig.from_cli_overrides(sys.argv[1:])
 
-    # Route to Arctic RL entrypoint if arctic_rl backend is configured.
-    # This allows users to switch backends via config alone without changing
-    # the entrypoint command.  The integration code lives in a top-level
-    # ``arctic-rl/`` folder (sibling of ``skyrl/``, like the legacy
-    # ``skyrl-tx/``); the importable Python package is ``arctic_rl``.  It
-    # is distinct from the upstream ``arctic_training.arctic_rl`` sub-
-    # namespace — both coexist at import time without collision.
-    if cfg.trainer.arctic_rl is not None:
-        from arctic_rl.entrypoint import main as arctic_rl_main
-        arctic_rl_main()
-        return
+    # Generic backend dispatch.  When ``trainer.backend`` is anything other than
+    # the default FSDP, lazily import the integration's entrypoint and hand off.
+    # No integration-specific code lives here — same hook works for arctic_rl,
+    # megatron, future backends, etc.  Each integration ships its own
+    # ``integrations/<name>/entrypoint.py:main(cfg)``.
+    if cfg.trainer.backend != "fsdp":
+        from importlib import import_module
+        backend_main = import_module(f"integrations.{cfg.trainer.backend}.entrypoint").main
+        return backend_main(cfg)
 
     # validate the arguments
     validate_cfg(cfg)

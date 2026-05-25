@@ -116,8 +116,27 @@ def skyrl_entrypoint(
     exp.run()
 
 
-def main() -> None:
-    cfg = SkyRLTrainConfig.from_cli_overrides(sys.argv[1:])
+def main(cfg=None) -> None:
+    """Arctic RL entrypoint.
+
+    Two invocation modes:
+
+    1. **Direct** (``uv run --extra arctic-rl -m integrations.arctic_rl.entrypoint``):
+       ``cfg`` is None → parse CLI with ``ArcticSkyRLConfig``.
+    2. **Via core dispatch** (``python -m skyrl.train.entrypoints.main_base
+       trainer.backend=arctic_rl``): ``cfg`` is the parsed ``SkyRLTrainConfig``
+       handed off by ``main_base.main``. We re-parse with ``ArcticSkyRLConfig``
+       to surface the ``trainer.arctic_rl`` field.
+    """
+    from arctic_rl.config import ArcticSkyRLConfig
+
+    if cfg is None:
+        cfg = ArcticSkyRLConfig.from_cli_overrides(sys.argv[1:])
+    elif not isinstance(cfg, ArcticSkyRLConfig):
+        # Came via core dispatch with the base SkyRLTrainConfig; re-parse to
+        # bind the ArcticTrainerConfig fields.
+        cfg = ArcticSkyRLConfig.from_cli_overrides(sys.argv[1:])
+
     validate_cfg(cfg)
 
     rl_config = build_rl_config(cfg)
@@ -131,6 +150,9 @@ def main() -> None:
 
     from skyrl.train.utils.utils import prepare_runtime_environment
     env_vars = prepare_runtime_environment(cfg)
+    # Forward ARCTIC_* env vars to Ray workers — moved here from core utils per
+    # reviewer feedback (core stays integration-agnostic).
+    env_vars.update({k: v for k, v in os.environ.items() if k.startswith("ARCTIC_")})
     ray.init(num_gpus=0, runtime_env={"env_vars": env_vars})
     ray.get(skyrl_entrypoint.remote(cfg, reconnect_config=reconnect_cfg))
 

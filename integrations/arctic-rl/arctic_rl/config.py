@@ -1,15 +1,81 @@
-"""Arctic RL client configuration builder.
+"""Arctic RL configuration types.
 
-Translates ``SkyRLTrainConfig`` into an ``ArcticRLClientConfig`` for the
-``arctic_training`` package.
+Defines:
+- ``ArcticRLTrainerConfig``: backend-specific knobs (colocate, zero_stage, ...)
+- ``ArcticTrainerConfig``: extends core ``TrainerConfig`` with ``arctic_rl`` field
+- ``ArcticSkyRLConfig``: top-level config used by the integration's entrypoint
+- ``build_rl_config(cfg)``: translates ``SkyRLTrainConfig`` → ``ArcticRLClientConfig``
 
-All shared knobs (GPU counts, colocation, vLLM settings) are derived from
-existing SkyRL config fields.  Only ARL-specific params live in
-``cfg.trainer.arctic_rl`` (see ``ArcticRLTrainerConfig``).
+These live in the integration to keep core SkyRL integration-agnostic — core only
+knows about a generic ``trainer.backend: str`` field that lazily dispatches here.
+All shared knobs (GPU counts, vLLM settings, colocation) are derived from existing
+SkyRL config fields by ``build_rl_config``.
 """
+
+from dataclasses import dataclass
+from typing import Optional
 
 from arctic_training.arctic_rl.config import ArcticRLClientConfig
 from skyrl.train.config import SkyRLTrainConfig
+from skyrl.train.config.config import BaseConfig, TrainerConfig, make_config
+
+
+# ---------------------------------------------------------------------------
+# Arctic RL backend configuration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ArcticRLTrainerConfig(BaseConfig):
+    """Arctic RL (DeepSpeed) backend settings.
+
+    Only contains params unique to the Arctic RL server with no equivalent in
+    the standard SkyRL config.  Shared knobs are derived in ``build_rl_config``.
+    """
+
+    colocate: bool = False
+    """Share GPUs between training and inference on the ARL server.
+
+    Distinct from ``trainer.placement.colocate_all`` which controls Ray placement
+    groups.  ARL colocation is server-side GPU sharing — ``colocate_all`` must
+    stay ``false`` when using the ARL backend.
+    """
+    use_zorro: bool = False
+    """Enable ZoRRO (prompt deduplication) on the training server."""
+    zero_stage: int = 0
+    """DeepSpeed ZeRO stage (0, 2, or 3)."""
+    log_prob_gpus: int = 0
+    """Number of GPUs for log-prob computation (0 = skip separate log-prob)."""
+    offload_optimizer: bool = False
+    """Offload optimizer state to CPU when ``zero_stage >= 2``."""
+    host: Optional[str] = None
+    """Server host for HTTP comm protocol; ignored for Ray."""
+    port: Optional[int] = None
+    """Server port for HTTP comm protocol; ignored for Ray."""
+    startup_timeout: float = 300.0
+    """Seconds to wait for server jobs to come up."""
+    server_logs: bool = False
+    """Forward server logs to stdout for debugging."""
+
+
+@dataclass
+class ArcticTrainerConfig(TrainerConfig):
+    """``TrainerConfig`` extended with the Arctic RL field.  Used only when
+    ``trainer.backend == "arctic_rl"`` is set in the recipe."""
+
+    arctic_rl: Optional[ArcticRLTrainerConfig] = None
+    """Arctic RL backend settings.  ``None`` falls back to defaults."""
+
+
+# Top-level config for arctic_rl recipes.  Used by the integration's entrypoint
+# either directly (``uv run -m integrations.arctic_rl.entrypoint``) or via core
+# dispatch (``trainer.backend=arctic_rl`` from ``main_base``).
+ArcticSkyRLConfig = make_config(trainer_cls=ArcticTrainerConfig)
+
+
+# ---------------------------------------------------------------------------
+# Translation: SkyRLTrainConfig → ArcticRLClientConfig
+# ---------------------------------------------------------------------------
 
 
 def build_rl_config(cfg: SkyRLTrainConfig) -> ArcticRLClientConfig:
