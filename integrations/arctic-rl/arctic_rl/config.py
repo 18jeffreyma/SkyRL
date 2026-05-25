@@ -48,9 +48,9 @@ class ArcticRLTrainerConfig(BaseConfig):
     """Number of GPUs for log-prob computation (0 = skip separate log-prob)."""
     offload_optimizer: bool = False
     """Offload optimizer state to CPU when ``zero_stage >= 2``."""
-    host: Optional[str] = None
+    host: str = "localhost"
     """Server host for HTTP comm protocol; ignored for Ray."""
-    port: Optional[int] = None
+    port: int = 7000
     """Server port for HTTP comm protocol; ignored for Ray."""
     startup_timeout: float = 300.0
     """Seconds to wait for server jobs to come up."""

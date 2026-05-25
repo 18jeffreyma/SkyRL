@@ -473,18 +473,23 @@ def skyrl_entrypoint(cfg: SkyRLTrainConfig):
 
 
 def main() -> None:
-    # Parse CLI args and build typed config
-    cfg = SkyRLTrainConfig.from_cli_overrides(sys.argv[1:])
-
-    # Generic backend dispatch.  When ``trainer.backend`` is anything other than
-    # the default FSDP, lazily import the integration's entrypoint and hand off.
-    # No integration-specific code lives here — same hook works for arctic_rl,
-    # megatron, future backends, etc.  Each integration ships its own
-    # ``integrations/<name>/entrypoint.py:main(cfg)``.
-    if cfg.trainer.backend != "fsdp":
+    # Peek at trainer.backend BEFORE strict config parse: integrations may add
+    # their own fields (e.g. ``trainer.arctic_rl``) that core SkyRLTrainConfig
+    # doesn't know about. If a non-default backend is selected, dispatch to the
+    # integration's entrypoint and let it parse with its own extended config.
+    # Generic — no integration-specific code lives here.
+    backend = "fsdp"
+    for arg in sys.argv[1:]:
+        if arg.startswith("trainer.backend="):
+            backend = arg.split("=", 1)[1]
+            break
+    if backend != "fsdp":
         from importlib import import_module
-        backend_main = import_module(f"integrations.{cfg.trainer.backend}.entrypoint").main
-        return backend_main(cfg)
+        backend_main = import_module(f"{backend}.entrypoint").main
+        return backend_main()
+
+    # Parse CLI args and build typed config (FSDP path)
+    cfg = SkyRLTrainConfig.from_cli_overrides(sys.argv[1:])
 
     # validate the arguments
     validate_cfg(cfg)
