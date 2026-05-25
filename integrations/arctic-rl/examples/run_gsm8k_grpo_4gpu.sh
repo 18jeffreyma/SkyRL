@@ -1,19 +1,9 @@
 #!/usr/bin/env bash
 # GSM8K GRPO training via Arctic RL server.
 #
-# Two equivalent ways to launch:
-#
-#   (a) Via core dispatch (any standard recipe + flag):
-#         python -m skyrl.train.entrypoints.main_base \
-#             trainer.backend=arctic_rl trainer.arctic_rl={} <other flags>
-#
-#   (b) Direct entrypoint (uv-based, isolated, mirrors harbor):
-#         uv run --isolated --extra fsdp --extra arctic-rl \
-#             -m integrations.arctic_rl.entrypoint <other flags>
-#
-# Both routes exercise the same code path: ArcticPPOTrainer + ArcticGenerator.
-# This script uses (a) so any existing SkyRL recipe can be Arctic-ified by
-# adding two flags and re-running.
+# Equivalent: (a) `python -m skyrl.train.entrypoints.main_base trainer.backend=arctic_rl ...`
+#             (b) `uv run --extra arctic-rl -m arctic_rl.entrypoint ...`
+# This script uses (a).
 #
 # Non-colocated (4 GPUs: 2 training + 2 sampling):
 #   bash integrations/arctic-rl/examples/run_gsm8k_grpo_4gpu.sh \

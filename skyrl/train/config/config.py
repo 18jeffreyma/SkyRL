@@ -635,11 +635,9 @@ class TrainerConfig(BaseConfig):
     rope_theta: Optional[float] = None
 
     backend: str = "fsdp"
-    """Training backend to use. ``"fsdp"`` (default) runs the standard SkyRL FSDP path.
-    Any other value names an integration under ``integrations/<name>/`` that ships
-    its own ``entrypoint.py:main(cfg)``; ``main_base`` will lazily import and
-    dispatch to it. Generic extension hook — no integration-specific code lives
-    in core.  Example values: ``"arctic_rl"`` (DeepSpeed), future ``"megatron"``."""
+    """Training backend. ``"fsdp"`` is the standard SkyRL path; any other value
+    names an installed integration package (``<name>.entrypoint:main``) that
+    ``main_base`` lazily imports and dispatches to."""
 
     def __post_init__(self):
         # ref model defaults to the policy model

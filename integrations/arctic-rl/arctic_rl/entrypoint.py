@@ -116,27 +116,13 @@ def skyrl_entrypoint(
     exp.run()
 
 
-def main(cfg=None) -> None:
-    """Arctic RL entrypoint.
-
-    Two invocation modes:
-
-    1. **Direct** (``uv run --extra arctic-rl -m integrations.arctic_rl.entrypoint``):
-       ``cfg`` is None → parse CLI with ``ArcticSkyRLConfig``.
-    2. **Via core dispatch** (``python -m skyrl.train.entrypoints.main_base
-       trainer.backend=arctic_rl``): ``cfg`` is the parsed ``SkyRLTrainConfig``
-       handed off by ``main_base.main``. We re-parse with ``ArcticSkyRLConfig``
-       to surface the ``trainer.arctic_rl`` field.
-    """
+def main() -> None:
+    """Arctic RL entrypoint. Reachable two ways: direct (``uv run -m
+    arctic_rl.entrypoint``) or via core dispatch (``python -m
+    skyrl.train.entrypoints.main_base trainer.backend=arctic_rl``).
+    Both paths parse with ``ArcticSkyRLConfig`` here."""
     from arctic_rl.config import ArcticSkyRLConfig
-
-    if cfg is None:
-        cfg = ArcticSkyRLConfig.from_cli_overrides(sys.argv[1:])
-    elif not isinstance(cfg, ArcticSkyRLConfig):
-        # Came via core dispatch with the base SkyRLTrainConfig; re-parse to
-        # bind the ArcticTrainerConfig fields.
-        cfg = ArcticSkyRLConfig.from_cli_overrides(sys.argv[1:])
-
+    cfg = ArcticSkyRLConfig.from_cli_overrides(sys.argv[1:])
     validate_cfg(cfg)
 
     rl_config = build_rl_config(cfg)
