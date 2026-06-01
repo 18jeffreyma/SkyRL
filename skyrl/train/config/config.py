@@ -193,55 +193,6 @@ class PlacementConfig(BaseConfig):
 
 
 # ---------------------------------------------------------------------------
-# Arctic RL backend
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ArcticRLTrainerConfig(BaseConfig):
-    """Arctic RL (DeepSpeed) backend settings.
-
-    Only contains params that are unique to the Arctic RL server and have
-    no equivalent in the standard SkyRL config.  Shared knobs are derived
-    automatically by ``build_rl_config``:
-
-    ============== ================================================
-    ARL concept    Derived from
-    ============== ================================================
-    training_gpus  ``trainer.placement.policy_num_gpus_per_node``
-                   ``* trainer.placement.policy_num_nodes``
-    sampling_gpus  ``generator.inference_engine.num_engines``
-    vllm mem/TP    ``generator.inference_engine.*``
-    ============== ================================================
-    """
-
-    colocate: bool = False
-    """Share GPUs between training and inference on the ARL server.
-
-    This is distinct from ``trainer.placement.colocate_all`` which controls
-    Ray placement groups.  ARL colocation is server-side GPU sharing managed
-    by the Arctic RL server — ``colocate_all`` must stay ``false`` when
-    using the ARL backend.
-    """
-    use_zorro: bool = False
-    """Enable ZoRRO (prompt deduplication) on the training server."""
-    zero_stage: int = 0
-    """DeepSpeed ZeRO stage (0, 2, or 3)."""
-    log_prob_gpus: int = 0
-    """Number of GPUs for log-prob computation (0 = skip separate log-prob)."""
-    host: str = "localhost"
-    """Arctic RL server hostname."""
-    port: int = 7000
-    """Arctic RL server port."""
-    startup_timeout: float = 600
-    """Seconds to wait for server readiness."""
-    server_logs: bool = False
-    """Enable verbose server logging."""
-    offload_optimizer: bool = False
-    """Offload optimizer to CPU. Applicable to ZeRO stage 2 and 3."""
-
-
-# ---------------------------------------------------------------------------
 # Policy / Critic / Ref
 # ---------------------------------------------------------------------------
 
@@ -683,8 +634,10 @@ class TrainerConfig(BaseConfig):
     rope_scaling: Optional[Dict[str, Any]] = None
     rope_theta: Optional[float] = None
 
-    arctic_rl: Optional[ArcticRLTrainerConfig] = None
-    """Config for the Arctic RL backend.  ``None`` means the backend is not used."""
+    backend: str = "fsdp"
+    """Training backend. ``"fsdp"`` is the standard SkyRL path; any other value
+    names an installed integration package (``<name>.entrypoint:main``) that
+    ``main_base`` lazily imports and dispatches to."""
 
     def __post_init__(self):
         # ref model defaults to the policy model

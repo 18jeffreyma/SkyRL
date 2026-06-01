@@ -117,7 +117,12 @@ def skyrl_entrypoint(
 
 
 def main() -> None:
-    cfg = SkyRLTrainConfig.from_cli_overrides(sys.argv[1:])
+    """Arctic RL entrypoint. Reachable two ways: direct (``uv run -m
+    arctic_rl.entrypoint``) or via core dispatch (``python -m
+    skyrl.train.entrypoints.main_base trainer.backend=arctic_rl``).
+    Both paths parse with ``ArcticSkyRLConfig`` here."""
+    from arctic_rl.config import ArcticSkyRLConfig
+    cfg = ArcticSkyRLConfig.from_cli_overrides(sys.argv[1:])
     validate_cfg(cfg)
 
     rl_config = build_rl_config(cfg)
@@ -131,6 +136,9 @@ def main() -> None:
 
     from skyrl.train.utils.utils import prepare_runtime_environment
     env_vars = prepare_runtime_environment(cfg)
+    # Forward ARCTIC_* env vars to Ray workers — moved here from core utils per
+    # reviewer feedback (core stays integration-agnostic).
+    env_vars.update({k: v for k, v in os.environ.items() if k.startswith("ARCTIC_")})
     ray.init(num_gpus=0, runtime_env={"env_vars": env_vars})
     ray.get(skyrl_entrypoint.remote(cfg, reconnect_config=reconnect_cfg))
 

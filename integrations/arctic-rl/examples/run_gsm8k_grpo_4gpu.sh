@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # GSM8K GRPO training via Arctic RL server.
 #
+# Equivalent: (a) `python -m skyrl.train.entrypoints.main_base trainer.backend=arctic_rl ...`
+#             (b) `uv run --extra arctic-rl -m arctic_rl.entrypoint ...`
+# This script uses (a).
+#
 # Non-colocated (4 GPUs: 2 training + 2 sampling):
 #   bash integrations/arctic-rl/examples/run_gsm8k_grpo_4gpu.sh \
 #     trainer.placement.policy_num_gpus_per_node=2 \
@@ -26,6 +30,7 @@ export PYTHONUNBUFFERED=1
 python -m skyrl.train.entrypoints.main_base \
   data.train_data="['${DATA_DIR}/train.parquet']" \
   data.val_data="['${DATA_DIR}/validation.parquet']" \
+  trainer.backend=arctic_rl \
   trainer.arctic_rl={} \
   trainer.algorithm.advantage_estimator=grpo \
   trainer.policy.model.path="${MODEL}" \

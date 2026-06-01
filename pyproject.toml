@@ -2,14 +2,8 @@
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-# ``skyrl/`` is the upstream package. ``arctic-rl/`` is a top-level folder
-# (sibling of ``skyrl/``, like the legacy ``skyrl-tx/``) that hosts the
-# Arctic RL integration: the importable ``arctic_rl`` Python package and
-# its ``examples/`` subdir. Hyphenated outer folder + underscore module
-# matches the ``skyrl-tx/`` -> ``skyrl.tx`` precedent.
 [tool.setuptools.packages.find]
-where = [".", "integrations/arctic-rl"]
-include = ["skyrl*", "arctic_rl*"]
+include = ["skyrl*"]
 
 [project]
 name = "skyrl"
