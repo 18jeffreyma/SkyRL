@@ -139,6 +139,16 @@ def main() -> None:
     # Forward ARCTIC_* env vars to Ray workers — moved here from core utils per
     # reviewer feedback (core stays integration-agnostic).
     env_vars.update({k: v for k, v in os.environ.items() if k.startswith("ARCTIC_")})
+    # Make the ``arctic_rl`` integration importable in Ray workers. The driver
+    # discovers it via sys.path (added by main_base), but Ray workers inherit
+    # only this runtime_env — without it, importing skyrl_entrypoint /
+    # deserializing the ArcticSkyRLConfig fails with ``No module named
+    # 'arctic_rl'``. ``parents[1]`` of this file is the dir holding the package.
+    _integration_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _existing_pp = env_vars.get("PYTHONPATH") or os.environ.get("PYTHONPATH", "")
+    env_vars["PYTHONPATH"] = _integration_root + (
+        os.pathsep + _existing_pp if _existing_pp else ""
+    )
     ray.init(num_gpus=0, runtime_env={"env_vars": env_vars})
     ray.get(skyrl_entrypoint.remote(cfg, reconnect_config=reconnect_cfg))
 
