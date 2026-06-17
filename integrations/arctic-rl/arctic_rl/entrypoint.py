@@ -158,11 +158,19 @@ def main() -> None:
     env_vars["PYTHONPATH"] = _integration_root + (
         os.pathsep + _existing_pp if _existing_pp else ""
     )
-    # arctic_platform.rl.create_arctic_rl_client(ray) attaches to / starts a
-    # Ray cluster with GPUs during pre-init; ignore_reinit_error lets the
-    # driver-side num_gpus=0 init reuse it instead of erroring out.
-    ray.init(num_gpus=0, runtime_env={"env_vars": env_vars}, ignore_reinit_error=True)
-    ray.get(skyrl_entrypoint.remote(cfg, reconnect_config=reconnect_cfg, server_state=server_state))
+    runtime_env = {"env_vars": env_vars}
+    # arctic_platform.rl.create_arctic_rl_client(ray) starts a GPU Ray cluster
+    # during pre-init above, so the driver-side ray.init must (a) reuse it
+    # (ignore_reinit_error) and (b) pass runtime_env at TASK granularity
+    # rather than via init — init's runtime_env is ignored on the second call
+    # to an already-initialized cluster, which would silently drop our
+    # PYTHONPATH and crash workers with `ModuleNotFoundError: arctic_rl`.
+    ray.init(num_gpus=0, runtime_env=runtime_env, ignore_reinit_error=True)
+    ray.get(
+        skyrl_entrypoint.options(runtime_env=runtime_env).remote(
+            cfg, reconnect_config=reconnect_cfg, server_state=server_state,
+        )
+    )
 
 
 if __name__ == "__main__":
