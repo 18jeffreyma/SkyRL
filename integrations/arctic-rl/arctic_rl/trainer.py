@@ -598,7 +598,22 @@ class _ArcticDispatch:
     def optim_step(self, model: str) -> Optional[float]:
         resp = _run(self.client.step())
         metrics = resp.get("metrics", resp)
-        return metrics.get("grad_norm")
+        # The server reports per-DP-rank grad_norm as a flat list (length =
+        # num training workers); SkyRL's `reduce_metrics` expects a scalar
+        # per call and warns "Metrics for key grad_norm are not all numbers"
+        # if given a nested list. With ZeRO-3 + DDP every rank sees the same
+        # globally-reduced grad_norm, so picking the first is equivalent to
+        # averaging — and avoids the warning churn in the trainer logs.
+        grad_norm = metrics.get("grad_norm")
+        if isinstance(grad_norm, (list, tuple)):
+            flat = []
+            for v in grad_norm:
+                if isinstance(v, (list, tuple)):
+                    flat.extend(v)
+                else:
+                    flat.append(v)
+            grad_norm = float(flat[0]) if flat else None
+        return grad_norm
 
     def get_lcm_dp_size(self) -> int:
         return 1
