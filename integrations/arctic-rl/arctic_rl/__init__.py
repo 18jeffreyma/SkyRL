@@ -15,11 +15,12 @@ Usage in a recipe::
 The folder on disk is ``integrations/arctic-rl/arctic_rl/`` — top-level sibling of
 ``skyrl/`` (matching the legacy ``skyrl-tx/`` placement). The Python
 package is ``arctic_rl`` (top-level); it is distinct from the upstream
-``arctic_training`` package (which has its own ``arctic_training.arctic_rl``
-sub-namespace) — both coexist at import time without collision.
+``arctic_platform`` package (which exposes the actual client under
+``arctic_platform.rl``) — both coexist at import time without collision.
 
 Dependencies:
-    arctic_training — pip package providing ArcticRLClient/Server
+    arctic_platform — pip package providing ArcticRLClient/Server
+        (``from arctic_platform.rl import create_arctic_rl_client, ArcticRLClientConfig``)
 """
 
 from arctic_rl.trainer import ArcticPPOTrainer

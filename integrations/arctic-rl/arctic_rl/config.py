@@ -15,7 +15,7 @@ SkyRL config fields by ``build_rl_config``.
 from dataclasses import dataclass
 from typing import Optional
 
-from arctic_training.arctic_rl.config import ArcticRLClientConfig
+from arctic_platform.rl import ArcticRLClientConfig
 from skyrl.train.config import SkyRLTrainConfig
 from skyrl.train.config.config import BaseConfig, TrainerConfig, make_config
 
@@ -160,12 +160,15 @@ def build_rl_config(cfg: SkyRLTrainConfig) -> ArcticRLClientConfig:
     return ArcticRLClientConfig(
         model_name=cfg.trainer.policy.model.path,
         backend="local",
-        host=arl.host,
-        port=arl.port,
+        # arctic_platform.rl defaults comm_protocol to "http"; preserve the
+        # public-branch behavior (in-process Ray actor) by setting it explicitly.
+        # Host/port are auto-derived from comm_protocol (None for ray).
+        comm_protocol="ray",
+        checkpoint_path=cfg.trainer.ckpt_path,
         training_gpus=training_gpus,
         sampling_gpus=sampling_gpus,
         log_prob_gpus=arl.log_prob_gpus,
-        log_prob_engine="vllm",
+        log_prob_engine="deepspeed" if arl.log_prob_gpus > 0 else "vllm",
         colocate=colocate,
         vllm_config=vllm_cfg,
         ds_config=ds_config,

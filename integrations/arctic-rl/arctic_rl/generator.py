@@ -6,12 +6,10 @@ scored by the corresponding skyrl-gym environment (e.g. GSM8K) so that
 the reward signal is available for GRPO training.
 """
 
-import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
 import skyrl_gym
-from arctic_training.arctic_rl.client import ArcticRLClient
 from skyrl.train.generators.base import GeneratorInput, GeneratorInterface, GeneratorOutput
 
 logger = logging.getLogger(__name__)
@@ -21,7 +19,7 @@ class ArcticGenerator(GeneratorInterface):
 
     def __init__(
         self,
-        arctic_client: ArcticRLClient,
+        arctic_client,
         tokenizer,
         sampling_params: Optional[Any] = None,
         skyrl_gym_cfg: Optional[Any] = None,
@@ -51,8 +49,8 @@ class ArcticGenerator(GeneratorInterface):
             prompt_texts.append(text)
             prompt_token_ids_list.append(self.tokenizer.encode(text, add_special_tokens=False))
 
-        raw_outputs = await asyncio.to_thread(
-            self.arctic_client.generate,
+        # arctic_platform.rl client.generate is async; await directly.
+        raw_outputs = await self.arctic_client.generate(
             prompts=prompt_texts,
             sampling_params=sampling_params,
         )

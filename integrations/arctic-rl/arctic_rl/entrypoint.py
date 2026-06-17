@@ -15,13 +15,12 @@ when ``trainer.arctic_rl is not None``. Researchers should use the standard
 
 import os
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 import ray
 from loguru import logger
 
-from arctic_training.arctic_rl.client import ArcticRLClient
-from arctic_training.arctic_rl.config import ArcticRLClientConfig
+from arctic_platform.rl import ArcticRLClientConfig, create_arctic_rl_client
 from skyrl.train.config import SkyRLTrainConfig
 from skyrl.train.entrypoints.main_base import BasePPOExp
 from skyrl.train.utils import validate_cfg
@@ -36,6 +35,7 @@ class ArcticRLExp(BasePPOExp):
         self,
         cfg: SkyRLTrainConfig,
         reconnect_config: Optional[ArcticRLClientConfig] = None,
+        server_state: Optional[Any] = None,
     ):
         n_samples = cfg.generator.n_samples_per_prompt
         mini_batch_size = cfg.trainer.policy_mini_batch_size * n_samples
@@ -43,10 +43,13 @@ class ArcticRLExp(BasePPOExp):
         grad_accum_steps = max(1, train_batch_size // mini_batch_size)
         lr = cfg.trainer.policy.optimizer_config.lr
 
+        # arctic_platform.rl.create_arctic_rl_client takes an optional
+        # server_state used by the ray-protocol client to reattach to an
+        # already-initialized server actor (driver pre-init pattern, see main()).
         if reconnect_config is not None:
-            self.arctic_client = ArcticRLClient(reconnect_config)
+            self.arctic_client = create_arctic_rl_client(reconnect_config, server_state)
         else:
-            self.arctic_client = ArcticRLClient(build_rl_config(cfg))
+            self.arctic_client = create_arctic_rl_client(build_rl_config(cfg), server_state)
 
         logger.info(
             f"DeepSpeed config: lr={lr}, grad_accum_steps={grad_accum_steps}, "
@@ -111,8 +114,9 @@ class ArcticRLExp(BasePPOExp):
 def skyrl_entrypoint(
     cfg: SkyRLTrainConfig,
     reconnect_config: Optional[ArcticRLClientConfig] = None,
+    server_state: Optional[Any] = None,
 ):
-    exp = ArcticRLExp(cfg, reconnect_config=reconnect_config)
+    exp = ArcticRLExp(cfg, reconnect_config=reconnect_config, server_state=server_state)
     exp.run()
 
 
@@ -127,8 +131,13 @@ def main() -> None:
 
     rl_config = build_rl_config(cfg)
     logger.info("Pre-initializing ArcticRL jobs (before ray.init)…")
-    pre_client = ArcticRLClient(rl_config)
+    pre_client = create_arctic_rl_client(rl_config)
     reconnect_cfg = pre_client.reconnect_config()
+    # For the ray comm protocol, the client owns an in-process server actor
+    # state that must be handed to the reconnecting worker. For http it's None.
+    server_state = (
+        pre_client.get_server_state() if rl_config.comm_protocol == "ray" else None
+    )
     logger.info(
         f"ArcticRL jobs ready — training={pre_client.training_job_id}, "
         f"sample={pre_client.sampling_job_id}, log_prob={pre_client.log_prob_job_id}"
@@ -149,8 +158,11 @@ def main() -> None:
     env_vars["PYTHONPATH"] = _integration_root + (
         os.pathsep + _existing_pp if _existing_pp else ""
     )
-    ray.init(num_gpus=0, runtime_env={"env_vars": env_vars})
-    ray.get(skyrl_entrypoint.remote(cfg, reconnect_config=reconnect_cfg))
+    # arctic_platform.rl.create_arctic_rl_client(ray) attaches to / starts a
+    # Ray cluster with GPUs during pre-init; ignore_reinit_error lets the
+    # driver-side num_gpus=0 init reuse it instead of erroring out.
+    ray.init(num_gpus=0, runtime_env={"env_vars": env_vars}, ignore_reinit_error=True)
+    ray.get(skyrl_entrypoint.remote(cfg, reconnect_config=reconnect_cfg, server_state=server_state))
 
 
 if __name__ == "__main__":

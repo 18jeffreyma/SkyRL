@@ -15,20 +15,40 @@ The client is responsible only for:
   - sending (sequences, rewards, loss_mask) to the server for training
 
 Dependencies:
-    arctic_training  — pip package (``arctic_rl_client`` sub-module)
+    arctic_platform  — on-prem-and-dss-platform Arctic RL client
 """
 
+import asyncio
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 import torch
 from loguru import logger
 
-from arctic_training.arctic_rl.client import ArcticRLClient
 from skyrl.backends.skyrl_train.training_batch import TrainingInputBatch, TrainingOutputBatch
 from skyrl.train.trainer import RayPPOTrainer
 from skyrl.train.config import SkyRLTrainConfig
 from skyrl.backends.skyrl_train.workers.worker_utils import reduce_metrics
+
+
+def _run(coro):
+    """Run an awaitable from sync context.
+
+    SkyRL's WorkerDispatch protocol is synchronous but the new
+    ``arctic_platform.rl`` client methods are async, so the dispatch
+    blocks on the coroutine here. There is no outer running loop in the
+    Ray actor's main step path, so ``asyncio.run`` is safe; if a caller
+    invokes us from inside a loop we fall back to a fresh loop in a worker
+    thread.
+    """
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                lambda c=coro: asyncio.new_event_loop().run_until_complete(c)
+            ).result()
 
 
 class ArcticPPOTrainer(RayPPOTrainer):
@@ -38,7 +58,7 @@ class ArcticPPOTrainer(RayPPOTrainer):
     ``colocate_all: false`` since all GPU work is on the Arctic RL server.
     """
 
-    def __init__(self, *args, arctic_client: ArcticRLClient, **kwargs):
+    def __init__(self, *args, arctic_client, **kwargs):
         self._arctic_client = arctic_client
         self._stashed_rewards = None
         super().__init__(*args, **kwargs)
@@ -94,7 +114,7 @@ class ArcticPPOTrainer(RayPPOTrainer):
         ensures the step always triggers a real optimizer update.
         """
         if self._arctic_client.config.colocate:
-            self._arctic_client.wake_training()
+            _run(self._arctic_client.wake_training())
 
         if self._stashed_rewards is not None:
             data["rewards"] = self._stashed_rewards
@@ -135,10 +155,13 @@ class ArcticPPOTrainer(RayPPOTrainer):
 class _ArcticDispatch:
     """Routes ``WorkerDispatch`` calls to the Arctic RL server."""
 
-    def __init__(self, cfg: SkyRLTrainConfig, client: ArcticRLClient):
+    def __init__(self, cfg: SkyRLTrainConfig, client):
         self.cfg = cfg
         self.client = client
         self._colocate = client.config.colocate
+        arl = cfg.trainer.arctic_rl
+        self._cuda_ipc = bool(getattr(arl, "cuda_ipc_weight_sync", False)) if arl is not None else False
+        self._low_memory = bool(getattr(arl, "low_memory_weight_sync", False)) if arl is not None else False
 
     @staticmethod
     def _to_batch(data: TrainingInputBatch, start: int = 0, end: Optional[int] = None) -> dict:
@@ -192,9 +215,11 @@ class _ArcticDispatch:
 
     def forward(self, model: str, data: TrainingInputBatch) -> TrainingOutputBatch:
         batch = self._to_batch(data)
-        result = self.client.fwd_no_grad(batch, post_processors=["logprobs"])
+        # arctic_platform.rl: fwd_no_grad takes reference_model: bool (no
+        # post_processors kwarg); response carries model outputs under "batch".
+        result = _run(self.client.fwd_no_grad(batch, reference_model=False))
         out = TrainingOutputBatch()
-        for k, v in result.get("model_outputs", {}).items():
+        for k, v in result.get("batch", {}).items():
             out[k] = torch.tensor(v) if isinstance(v, list) else v
         out.metadata = {"model": model}
         return out
@@ -207,25 +232,27 @@ class _ArcticDispatch:
         loss_fn_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, float]:
         batch = self._to_batch(data)
-        result = self.client.fwd_bwd(
+        result = _run(self.client.fwd_bwd(
             batch,
             processing={
                 "loss_fn": loss_fn or "grpo",
                 "config": loss_fn_config or {},
                 "post": [],
             },
-        )
+        ))
         result.pop("job_id", None)
-        return result
+        return result.get("metrics", result)
 
     def optim_step(self, model: str) -> Optional[float]:
-        return self.client.step().get("grad_norm")
+        resp = _run(self.client.step())
+        metrics = resp.get("metrics", resp)
+        return metrics.get("grad_norm")
 
     def get_lcm_dp_size(self) -> int:
         return 1
 
     def save_checkpoint(self, model: str, ckpt_dir: str, tokenizer=None) -> None:
-        self.client.save_checkpoint()
+        _run(self.client.save_checkpoint())
 
     def load_checkpoint(self, model: str, ckpt_dir: str, **kwargs) -> None:
         logger.info(f"Arctic RL: load_checkpoint for {model} — delegated to server")
@@ -241,12 +268,12 @@ class _ArcticDispatch:
 
     async def save_weights_for_sampler(self) -> None:
         if self._colocate:
-            self.client.empty_training_cache()
-            self.client.wake_training()
-            self.client.wake_inference()
-            self.client.sync_weights(cuda_ipc=True)
+            await self.client.empty_training_cache()
+            await self.client.wake_training()
+            await self.client.wake_inference()
+            await self.client.sync_weights(cuda_ipc=self._cuda_ipc, low_memory=self._low_memory)
         else:
-            self.client.sync_weights()
+            await self.client.sync_weights(cuda_ipc=False, low_memory=self._low_memory)
 
     def mark_all_offloaded(self) -> None:
         pass
@@ -279,17 +306,17 @@ class _ArcticInferenceEngineStub:
     pause/resume are no-ops (server manages its own engine).
     """
 
-    def __init__(self, client: ArcticRLClient | None = None):
+    def __init__(self, client=None):
         self._client = client
 
     async def sleep(self, **kwargs):
         if self._client and self._client.config.colocate:
-            self._client.sleep_inference()
+            await self._client.sleep_inference()
 
     async def wake_up(self, **kwargs):
         if self._client and self._client.config.colocate:
             tags = kwargs.get("tags")
-            self._client.wake_inference(tags=tags)
+            await self._client.wake_inference(tags=tags)
 
     async def pause_generation(self, **kwargs):
         pass
@@ -320,7 +347,7 @@ def _make_arctic_fully_async_trainer_class():
         server-side GRPO loss, DeepSpeed gradient accumulation).
         """
 
-        def __init__(self, *args, arctic_client: ArcticRLClient, **kwargs):
+        def __init__(self, *args, arctic_client, **kwargs):
             self._arctic_client = arctic_client
             self._stashed_rewards = None
             super().__init__(*args, **kwargs)
@@ -375,7 +402,7 @@ def _make_arctic_fully_async_trainer_class():
 
         async def async_sync_policy_weights_to_inference_engines(self):
             """Sync weights via Arctic RL server instead of policy_model."""
-            self._arctic_client.sync_weights()
+            await self._arctic_client.sync_weights()
 
     return _ArcticFullyAsyncPPOTrainer
 
