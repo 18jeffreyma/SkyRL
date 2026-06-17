@@ -165,49 +165,81 @@ class _ArcticDispatch:
 
     @staticmethod
     def _to_batch(data: TrainingInputBatch, start: int = 0, end: Optional[int] = None) -> dict:
-        """Convert a ``TrainingInputBatch`` (or slice) into the dict the server expects.
+        """Translate SkyRL's ``TrainingInputBatch`` to the
+        ``arctic_platform.rl`` server's expected wire shape.
 
-        SkyRL stores response-length tensors (loss_mask, rewards, …) as
-        ``[B, A]`` while sequences are ``[B, S]``.  We left-pad all
-        response-length tensors with zeros so the server sees uniform
-        ``[B, S]`` shapes aligned with the logits.
+        The server's payload contract (shared with the verl adapter at
+        ``verl/workers/remote_client/arctic_rl.py``) is:
+
+          batch = {
+            input_ids       [B, S],   # full prompt+response (left-padded)
+            attention_mask  [B, S],   # 1 valid / 0 pad
+            prompts         [B, P],   # prompt-only slice; the server reads
+                                      # ONLY `.shape[1]` to derive
+                                      # `response_lens = attention_mask[:, P:]`
+                                      # (see processors/pipeline.py:236)
+            responses       [B, A],   # response-only slice (consumed by
+                                      # loss / advantage processors)
+            response_mask   [B, A],   # response-only mask
+            position_ids    [B, S],   # derived from attention_mask
+          }
+
+        SkyRL stores response-length tensors (``response_mask``,
+        ``loss_mask``, ``rewards``, …) natively as ``[B, A]`` and
+        ``sequences`` as ``[B, S]`` where S = max prompt + max response
+        in the batch. The translation is purely adapter-side; the server
+        is framework-agnostic.
         """
         if end is not None:
             data = data[start:end]
 
-        def generate_position_ids(d: Dict[str, Any]) -> Dict[str, Any]:
-            if "position_ids" not in d and "attention_mask" in d:
-                attn = d["attention_mask"]
-                pos = attn.long().cumsum(-1) - 1
-                pos.masked_fill_(attn == 0, 1)
-                d["position_ids"] = pos
-            return d
-
         def is_batch_tensor(t: Any) -> bool:
             return torch.is_tensor(t) and t.ndim >= 2
 
-        def left_pad_tensors(d: Dict[str, Any], seq_len: int) -> Dict[str, Any]:
-            for key, t in d.items():
-                if t.dim() == 2 and t.shape[1] < seq_len:
-                    pad = torch.zeros(t.shape[0], seq_len - t.shape[1],
-                                      dtype=t.dtype, device=t.device)
-                    d[key] = torch.cat([pad, t], dim=1)
-            return d
+        sequences = data["sequences"]                   # [B, S]
+        attention_mask = data["attention_mask"]         # [B, S]
+        response_mask = data["response_mask"]           # [B, A] response-only
+        full_seq_len = sequences.shape[1]
+        response_len = response_mask.shape[1]
+        prompt_len = full_seq_len - response_len        # uniform per batch:
+        #   `convert_prompts_responses_to_batch_tensors` left-pads prompts
+        #   to max_prompt_len and right-pads responses to max_response_len,
+        #   so the split point is constant across rows.
 
-        def prepare_batch_tensors(d: Dict[str, Any]) -> Dict[str, Any]:
-            batch = {k:v for k, v in data.items() if is_batch_tensor(v)}
-            seq_len = max(v.shape[1] for v in batch.values())
-            batch = left_pad_tensors(batch, seq_len)
-            if "sequences" in batch:
-                batch["input_ids"] = batch["sequences"]
-                batch["labels"] = batch["sequences"]
-                batch.pop("sequences")
-            batch = generate_position_ids(batch)
+        # Build the server-shape batch. We rename `sequences` -> `input_ids`
+        # to match the server's expected key.
+        batch: Dict[str, Any] = {
+            "input_ids": sequences,
+            "attention_mask": attention_mask,
+            # Server uses `.shape[1]` only -> the slice is sufficient (token
+            # values inside the prompt region are also correct here for any
+            # future server-side use).
+            "prompts": sequences[:, :prompt_len],
+            "responses": sequences[:, prompt_len:],
+            "response_mask": response_mask,
+        }
 
-            return batch
+        # position_ids derived from attention_mask (cumsum-1, with pad
+        # positions filled with 1 so they round-trip safely through any
+        # rotary-embedding lookup). Matches the verl adapter's behavior
+        # when `drop_position_ids=False`.
+        pos = attention_mask.long().cumsum(-1) - 1
+        pos.masked_fill_(attention_mask == 0, 1)
+        batch["position_ids"] = pos
 
-        batch = prepare_batch_tensors(data)
-        meta = {k:v for k, v in data.items() if not is_batch_tensor(v)}
+        # Forward any other 2D batch tensors SkyRL produced (e.g.
+        # `rollout_logprobs`, `rollout_expert_indices`, `loss_mask`,
+        # `rewards`, ...). These keep their native SkyRL shape; the server
+        # only reads ones it knows about (others are passed through as
+        # context for post-processors / loss functions). We skip
+        # `sequences` since it's already aliased to `input_ids` above.
+        for k, v in data.items():
+            if k in batch or k == "sequences":
+                continue
+            if is_batch_tensor(v):
+                batch[k] = v
+
+        meta = {k: v for k, v in data.items() if not is_batch_tensor(v)}
         return dict(batch=batch, meta=meta)
 
 
