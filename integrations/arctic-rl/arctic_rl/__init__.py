@@ -26,4 +26,10 @@ Dependencies:
 from arctic_rl.trainer import ArcticPPOTrainer
 from arctic_rl.generator import ArcticGenerator
 
+# Side-effect import: registers `bird` (and any future Arctic-RL-shipped
+# envs) with skyrl_gym so that recipes can do
+# `environment.env_class=bird` without modifying skyrl-gym's upstream
+# registry. Importing `arctic_rl` is sufficient.
+from arctic_rl import envs as _envs  # noqa: F401
+
 __all__ = ["ArcticPPOTrainer", "ArcticGenerator"]
