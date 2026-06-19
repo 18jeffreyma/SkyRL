@@ -1,31 +1,35 @@
 #!/usr/bin/env bash
 # SkyRL + Arctic RL backend: Qwen3-1.7B BIRD-SQL GRPO recipe.
 #
-# Mirrors Snowflake-AI-Research/verl PR #6 (run id mafx904c, wandb
-# `karthik-ganesan/arctic_rl_bird_sql/mafx904c`) hyperparameters so the
-# resulting SkyRL step-1 metrics can be compared 1:1 with the validated
-# verl baseline.
+# Mirrors Snowflake-AI-Research/arctic-verl xid2pl9f -- the verl
+# converged-reference BIRD-1.7B run with ``remote_backend.colocate=True``:
+# 269 steps, val reward ~0.59 (exec 0.93 / format 0.99), `ppo_kl=0` and
+# `pg_clipfrac=0` every step. Source recipe:
+# `<PATH>/launch_1.7b_newshape.sh`.
+#
+# Key memory knobs propagated to the Arctic DeepSpeed worker (without
+# these the colocated training + vLLM share OOMs on H200 at 96K-token
+# packed sequences -- see arctic_platform/rl/deepspeed_worker.py:147,155,202):
+#   - attn_implementation=flash_attention_3   O(N) attention memory
+#   - use_liger=true                          fused MLP/RMSNorm
+#   - enable_gradient_checkpointing=true      O(sqrt N) activations
+#   - ulysses_sequence_parallel_size=2        per-seq compute split 2-way
+#   - logits_optimization=memory              chunked LM-head compute
+#   - cuda_ipc_weight_sync=true               zero-copy weight push back to vLLM
 #
 # Toggle to other backends is one CLI flag (`trainer.backend=fsdp` for
 # stock SkyRL, `trainer.backend=arctic_rl` for this integration). No
-# PYTHONPATH gymnastics — main_base discovers `integrations/arctic-rl/`
+# PYTHONPATH gymnastics -- main_base discovers `integrations/arctic-rl/`
 # via `_ensure_backend_importable`.
 #
-# Mirrors verl's:
-#   - 8 GPUs colocated (training + sampling on the same GPUs via Arctic RL
-#     server-side colocation)
-#   - Qwen3-1.7B, BIRD parquet at <PATH>/open-source-text2sql/
-#   - GRPO, no KL loss, no KL in reward, entropy_coeff=0, clip_ratio=0.2
-#   - 32 prompts/batch × 16 rollouts (=512 trajectories/step), prompt len 32K,
-#     response len 4K, lr=2e-6, ZeRO-3 with optimizer offload, 1 epoch
-#
-# Wire-protocol caveat: this PR's integration shim is `arctic_platform.rl`-
-# compatible but does NOT yet ship the verl-shape meta dict / verl_grpo loss
-# / post-processors / tied-embeddings weight-sync fix. Those fixes belong in
-# `arctic_platform.rl` (see PR there). Expect SkyRL step-1 *invariants* to
-# match verl (clipfrac=0, ppo_kl=0 on epoch 1) and the *shape* of the metric
-# dict to overlap; absolute loss / grad_norm values will drift until the
-# `arctic_platform.rl` PR lands.
+# Step-1 invariants we expect (matching xid2pl9f):
+#   - actor/ppo_kl == 0           (single PPO epoch, single mini-batch:
+#                                  old_log_probs == log_probs by construction)
+#   - actor/pg_clipfrac == 0      (no clipping triggers when ratio == 1)
+#   - actor/pg_clipfrac_lower == 0
+#   - actor/loss == actor/pg_loss (no entropy/KL terms, both off in this recipe)
+# Absolute loss / grad_norm magnitudes will differ run-to-run because
+# rollouts differ; the invariants above are the deterministic baseline.
 
 set -euxo pipefail
 
@@ -87,6 +91,19 @@ cd "${SKYRL_DIR}"
     trainer.arctic_rl.zero_stage=3 \
     trainer.arctic_rl.offload_optimizer=true \
     trainer.arctic_rl.log_prob_gpus=0 \
+    trainer.arctic_rl.use_zorro=true \
+    trainer.arctic_rl.use_liger=true \
+    trainer.arctic_rl.attn_implementation=flash_attention_3 \
+    trainer.arctic_rl.enable_gradient_checkpointing=true \
+    trainer.arctic_rl.ulysses_sequence_parallel_size=2 \
+    trainer.arctic_rl.logits_optimization=memory \
+    trainer.arctic_rl.cuda_ipc_weight_sync=true \
+    trainer.arctic_rl.lr_warmup_ratio=0.05 \
+    'trainer.arctic_rl.optimizer_betas=[0.9,0.95]' \
+    trainer.arctic_rl.vllm_enforce_eager=false \
+    trainer.arctic_rl.vllm_enable_prefix_caching=true \
+    trainer.arctic_rl.vllm_max_num_batched_tokens=40960 \
+    trainer.arctic_rl.use_arctic_inference=true \
     trainer.arctic_rl.server_logs=true \
     trainer.arctic_rl.startup_timeout=1800 \
     data.train_data="['${DATA_DIR}/train.parquet']" \
