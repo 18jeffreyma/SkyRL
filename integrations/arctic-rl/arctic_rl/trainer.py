@@ -235,6 +235,12 @@ class _ArcticDispatch:
         else:
             self._max_token_len_per_gpu: int = int(max_prompt + max_resp)
 
+        # Fixed response_len baked into Qwen3ModelOncePatcher at engine build
+        # (arctic_rl/config.py:412 -> deepspeed_worker.py:328). Used by
+        # `_repack_to_verl_shape` to keep the patcher's prompt/response split
+        # aligned with the per-call attention mask.
+        self._patcher_response_len: int = int(max_resp)
+
         if self._zorro_train_enable:
             logger.warning(
                 "Arctic RL ZoRRO path enabled — make sure ds_worker_config "
@@ -298,6 +304,13 @@ class _ArcticDispatch:
 
         max_p = int(prompt_lens.max().item())
         max_r = int(response_lens.max().item())
+        # The ZoRRO patcher derives prompt_len = seq_len - patcher_response_len
+        # per forward; the server-side unpack uses meta["max_prompt_len"] = max_p.
+        # For the two to agree, the response region must be exactly
+        # patcher_response_len tokens wide. Padded positions get attention_mask=0
+        # so the model and loss treat them as masked.
+        if self._zorro_train_enable and max_r < self._patcher_response_len:
+            max_r = self._patcher_response_len
         new_S = max_p + max_r
 
         # Pre-allocate output tensors.
