@@ -106,9 +106,18 @@ class ArcticPPOTrainer(RayPPOTrainer):
         DeepSpeed's ``gradient_accumulation_steps``).  Each epoch sends a
         single fwd_bwd + step pair; ``set_gradient_accumulation_boundary``
         ensures the step always triggers a real optimizer update.
+
+        Restricted to ``update_epochs_per_batch == 1``: the per-epoch loop
+        in ``_ArcticDispatch.forward_backward`` calls ``_compute_old_log_probs``
+        on every iteration, so >1 epoch would refresh ``old_log_probs`` and
+        collapse PPO ``ratio`` to 1, defeating clipping. To support multi-epoch
+        later, hoist the old-log-prob call into ``fwd_logprobs_values_reward``
+        (matches verl's pre-update_actor ``compute_log_prob`` placement).
         """
-        if self._arctic_client.config.colocate:
-            _run(self._arctic_client.wake_training())
+        ep = int(self.cfg.trainer.update_epochs_per_batch)
+        assert ep == 1, (
+            f"ArcticPPOTrainer requires update_epochs_per_batch=1, got {ep}"
+        )
 
         if self._stashed_rewards is not None:
             data["rewards"] = self._stashed_rewards
@@ -119,18 +128,17 @@ class ArcticPPOTrainer(RayPPOTrainer):
 
         all_metrics: Dict[str, List[float]] = defaultdict(list)
 
-        for _epoch in range(self.cfg.trainer.update_epochs_per_batch):
-            status = self.dispatch.forward_backward(
-                "policy", data,
-                loss_fn="verl_grpo",
-                loss_fn_config={"n_samples": n_samples},
-            )
-            for k, v in status.items():
-                all_metrics[k].append(v)
+        status = self.dispatch.forward_backward(
+            "policy", data,
+            loss_fn="verl_grpo",
+            loss_fn_config={"n_samples": n_samples},
+        )
+        for k, v in status.items():
+            all_metrics[k].append(v)
 
-            grad_norm = self.dispatch.optim_step("policy")
-            if grad_norm is not None:
-                all_metrics["grad_norm"].append(grad_norm)
+        grad_norm = self.dispatch.optim_step("policy")
+        if grad_norm is not None:
+            all_metrics["grad_norm"].append(grad_norm)
 
         all_metrics.pop("loss_fn_outputs", None)
         all_metrics.pop("post_process_outputs", None)
@@ -192,32 +200,50 @@ class _ArcticDispatch:
             getattr(cfg.generator.sampling_params, "temperature", 1.0) or 1.0
         )
 
-        # Per-GPU token budget for tiled compute. SkyRL has no direct equivalent
-        # of verl's `actor.ppo_max_token_len_per_gpu`; we derive a safe upper
-        # bound = (max_prompt + max_response). The server uses this for
-        # ZoRRO/packed paths only — outside ZoRRO it's metadata for logging.
-        self._max_token_len_per_gpu: int = int(
-            cfg.trainer.max_prompt_length
-            + cfg.generator.sampling_params.max_generate_length
-        )
-
         # ZoRRO toggle — mirror SkyRL's `arl.use_zorro` onto the server-side
-        # `meta.zorro_train_enable` so the two stay in sync. Defaults to False
-        # (the verl PR #6 BIRD recipe we're matching disables zorro). When True
-        # the server expects the model to have been built with the
+        # `meta.zorro_train_enable` so the two stay in sync. Defaults to False.
+        # When True the server expects the model to have been built with the
         # zorro-aware ds_worker_config (`response_len`, `max_token_len`,
         # `rollout_n`, `use_unpad=True`) — `build_rl_config` in `config.py`
         # already wires those when `arl.use_zorro=True`. Wire payloads stay
         # ZoRRO-compatible regardless (response-only tensors are left-padded
-        # to seq_len in `forward_backward`), so flipping this only changes the
+        # to seq_len in `forward_backward`); flipping this only changes the
         # server-side compute path, not our outgoing payload shape.
         self._zorro_train_enable: bool = bool(getattr(arl, "use_zorro", False)) if arl is not None else False
+
+        # Per-GPU token budget for tiled compute. SkyRL has no direct
+        # equivalent of verl's `actor.ppo_max_token_len_per_gpu`; derive a
+        # ZoRRO-aware safe lower bound:
+        #
+        # * Non-ZoRRO (per-sequence packing): max_prompt + max_response —
+        #   the worst-case single-sequence length.
+        # * ZoRRO: max_prompt + n_samples * max_response — one deduplicated
+        #   prompt followed by n_samples concatenated responses. Required
+        #   because Arctic's `create_prompt_groups`
+        #   (`arctic_platform/rl/zorro_train/seqlen_balancing.py:462`)
+        #   packs an entire prompt-group into a single micro-batch and
+        #   asserts ``max_token_len >= max_prompt +
+        #   max_group_length_threshold * max_response``. With
+        #   ``max_group_length_threshold == n_samples`` (the default),
+        #   undersizing this budget produces ``ValueError: max_token_len=X
+        #   is smaller than Y`` on the first ``fwd_no_grad`` of step 1.
+        n_samples = cfg.generator.n_samples_per_prompt
+        max_prompt = cfg.trainer.max_prompt_length
+        max_resp = cfg.generator.sampling_params.max_generate_length
+        if self._zorro_train_enable:
+            self._max_token_len_per_gpu: int = int(max_prompt + n_samples * max_resp)
+        else:
+            self._max_token_len_per_gpu: int = int(max_prompt + max_resp)
+
         if self._zorro_train_enable:
             logger.warning(
-                "Arctic RL ZoRRO path enabled — make sure ds_worker_config carries "
-                "response_len / max_token_len / rollout_n / use_unpad. The wire "
-                "payload from this bridge is already ZoRRO-compatible (response-only "
-                "tensors left-padded to seq_len); only the server's compute path differs."
+                "Arctic RL ZoRRO path enabled — make sure ds_worker_config "
+                "carries response_len / max_token_len / rollout_n / use_unpad. "
+                "Wire payload from this bridge is already ZoRRO-compatible "
+                "(response-only tensors left-padded to seq_len); only the "
+                "server-side compute path differs. Bridge derived "
+                f"max_token_len_per_gpu={self._max_token_len_per_gpu} "
+                f"(= {max_prompt} + {n_samples} * {max_resp})."
             )
 
     # ------------------------------------------------------------------ #
@@ -378,6 +404,7 @@ class _ArcticDispatch:
         cfg = self.cfg
         algo = cfg.trainer.algorithm
         n_samples = cfg.generator.n_samples_per_prompt
+        arl = getattr(cfg.trainer, "arctic_rl", None)
 
         # actor_config — fields read by verl_grpo.VerlPolicyConfig.
         # SkyRL stores most of these on `cfg.trainer.algorithm`.
@@ -413,6 +440,26 @@ class _ArcticDispatch:
             "max_token_len_per_gpu": self._max_token_len_per_gpu,
             "temperature": self._temperature,
             "calculate_entropy": calculate_entropy,
+            # Per-call meta values. These must match what the public-branch
+            # bridge sent (hardcoded "none" / False / 4 / False) -- empirically
+            # validated through 7 converged steps of run gqpa0syk.
+            #
+            # IMPORTANT: do NOT source these from arl.* config. Pushing
+            # ``logits_optimization="memory"`` here triggered a server-side
+            # ZoRRO unpack mismatch at step 5 of run 1ikq295l ("value tensor
+            # of shape [8026] cannot be broadcast to indexing result of
+            # shape [7042]"), even though the same value is valid when set
+            # on ``ds_worker_config`` at engine-build time. The two layers
+            # take different code paths: ds_worker_config drives the model
+            # patcher (Qwen3ModelOncePatcher), per-call meta drives the
+            # non-ZoRRO processor pipeline (processors/pipeline.py:815-827),
+            # and pushing "memory" into the non-ZoRRO path corrupts the
+            # response-length packing contract.
+            #
+            # Likewise ``drop_position_ids=True`` while still sending
+            # position_ids in the batch caused position_id-vs-attention_mask
+            # divergence on certain batch compositions. Hardcoding False
+            # restores the matched shapes.
             "drop_position_ids": False,
             "logits_optimization": "none",
             "logits_optimization_peak_mem_size_in_gib": 4,
@@ -735,6 +782,15 @@ def _make_arctic_fully_async_trainer_class():
             return super().compute_advantages_and_returns(training_input)
 
         def train_critic_and_policy(self, data: TrainingInputBatch):
+            # See ArcticPPOTrainer.train_critic_and_policy docstring — the
+            # bridge's old-log-prob call lives inside forward_backward, so
+            # multi-epoch would collapse `ratio == 1` every epoch.
+            ep = int(self.cfg.trainer.update_epochs_per_batch)
+            assert ep == 1, (
+                f"ArcticFullyAsyncPPOTrainer: update_epochs_per_batch must "
+                f"be 1; got {ep}."
+            )
+
             if self._stashed_rewards is not None:
                 data["rewards"] = self._stashed_rewards
                 self._stashed_rewards = None
@@ -744,18 +800,17 @@ def _make_arctic_fully_async_trainer_class():
 
             all_metrics: Dict[str, List[float]] = defaultdict(list)
 
-            for _epoch in range(self.cfg.trainer.update_epochs_per_batch):
-                status = self.dispatch.forward_backward(
-                    "policy", data,
-                    loss_fn="verl_grpo",
-                    loss_fn_config={"n_samples": n_samples},
-                )
-                for k, v in status.items():
-                    all_metrics[k].append(v)
+            status = self.dispatch.forward_backward(
+                "policy", data,
+                loss_fn="verl_grpo",
+                loss_fn_config={"n_samples": n_samples},
+            )
+            for k, v in status.items():
+                all_metrics[k].append(v)
 
-                grad_norm = self.dispatch.optim_step("policy")
-                if grad_norm is not None:
-                    all_metrics["grad_norm"].append(grad_norm)
+            grad_norm = self.dispatch.optim_step("policy")
+            if grad_norm is not None:
+                all_metrics["grad_norm"].append(grad_norm)
 
             all_metrics.pop("loss_fn_outputs", None)
             all_metrics.pop("post_process_outputs", None)
