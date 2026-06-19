@@ -6,13 +6,36 @@ scored by the corresponding skyrl-gym environment (e.g. GSM8K) so that
 the reward signal is available for GRPO training.
 """
 
+import asyncio
+import concurrent.futures
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 import skyrl_gym
 from skyrl.train.generators.base import GeneratorInput, GeneratorInterface, GeneratorOutput
 
 logger = logging.getLogger(__name__)
+
+# 8 matches verl's agent_loop concurrency in the xid2pl9f reference run.
+_DEFAULT_SCORING_WORKERS = int(os.environ.get("ARCTIC_RL_SCORING_WORKERS", "8"))
+
+
+def _score_one(payload: Dict[str, Any]) -> float:
+    """Picklable env.init/step/close used by the scoring ProcessPoolExecutor."""
+    import skyrl_gym as _sg
+
+    env = _sg.make(
+        payload["env_class"],
+        env_config=payload["env_config"],
+        extras=payload["extras"],
+    )
+    try:
+        env.init(payload["prompt"])
+        step_out = env.step(payload["text"])
+        return float(step_out["reward"])
+    finally:
+        env.close()
 
 
 class ArcticGenerator(GeneratorInterface):
@@ -32,6 +55,11 @@ class ArcticGenerator(GeneratorInterface):
             "max_tokens": 4096,
             "top_p": 1.0,
         }
+        # Process pool (not threads) so per-worker BIRD sqlite handles and
+        # other reward-state globals stay isolated.
+        self._scoring_pool = concurrent.futures.ProcessPoolExecutor(
+            max_workers=_DEFAULT_SCORING_WORKERS,
+        )
 
     async def generate(self, input_batch: GeneratorInput) -> GeneratorOutput:
         prompts = input_batch["prompts"]
@@ -55,7 +83,14 @@ class ArcticGenerator(GeneratorInterface):
             sampling_params=sampling_params,
         )
 
-        response_ids, rewards, loss_masks, stop_reasons = [], [], [], []
+        # Build scoring payloads serially (tokenize/decode is cheap), then
+        # fan reward computation out to the pool. Two passes keep alignment
+        # with raw_outputs trivial.
+        response_ids: List[List[int]] = []
+        loss_masks: List[List[int]] = []
+        stop_reasons: List[str] = []
+        scoring_inputs: List[Optional[Dict[str, Any]]] = []
+
         for i, output in enumerate(raw_outputs):
             token_ids = output.get("token_ids", [])
             text = output.get("text", "")
@@ -68,26 +103,51 @@ class ArcticGenerator(GeneratorInterface):
             loss_masks.append([1] * len(token_ids))
             stop_reasons.append("completed" if output.get("finish_reason") == "stop" else "length")
 
-            reward = 0.0
-            if i < len(env_classes) and env_classes[i]:
-                try:
-                    extras = env_extras[i] if i < len(env_extras) else {}
-                    env_config = getattr(self.skyrl_gym_cfg, env_classes[i], dict()) if self.skyrl_gym_cfg else dict()
-                    env = skyrl_gym.make(env_classes[i], env_config=env_config, extras=extras)
-                    env.init(prompts[i])
-                    step_out = env.step(text)
-                    reward = float(step_out["reward"])
-                    env.close()
-                except Exception as e:
-                    if i == 0:
-                        logger.warning("ArcticGenerator reward scoring failed: %s", e, exc_info=True)
-            else:
+            env_class = env_classes[i] if i < len(env_classes) else None
+            if not env_class:
                 if i == 0:
                     logger.warning(
                         "ArcticGenerator: no env_classes for sample %d (len=%d)",
                         i, len(env_classes),
                     )
-            rewards.append(reward)
+                scoring_inputs.append(None)
+                continue
+
+            env_config = (
+                getattr(self.skyrl_gym_cfg, env_class, dict()) if self.skyrl_gym_cfg else dict()
+            )
+            scoring_inputs.append(
+                {
+                    "env_class": env_class,
+                    "env_config": env_config,
+                    "extras": env_extras[i] if i < len(env_extras) else {},
+                    "prompt": prompts[i],
+                    "text": text,
+                }
+            )
+
+        loop = asyncio.get_running_loop()
+        futures = [
+            (
+                loop.run_in_executor(self._scoring_pool, _score_one, payload)
+                if payload is not None
+                else None
+            )
+            for payload in scoring_inputs
+        ]
+        rewards: List[float] = []
+        for i, fut in enumerate(futures):
+            if fut is None:
+                rewards.append(0.0)
+                continue
+            try:
+                rewards.append(await fut)
+            except Exception as e:
+                if i == 0:
+                    logger.warning(
+                        "ArcticGenerator reward scoring failed: %s", e, exc_info=True
+                    )
+                rewards.append(0.0)
 
         return GeneratorOutput(
             prompt_token_ids=prompt_token_ids_list,
