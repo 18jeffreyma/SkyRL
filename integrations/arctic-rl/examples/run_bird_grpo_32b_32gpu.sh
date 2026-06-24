@@ -1,30 +1,11 @@
 #!/usr/bin/env bash
-# SkyRL + Arctic RL backend: Qwen3-32B BIRD-SQL GRPO recipe — 4 nodes / 32 H200s.
+# SkyRL + Arctic RL backend: Qwen3-32B BIRD-SQL GRPO — 4 nodes / 32 H200s.
 #
-# Adapted from Tunji's verl recipe
-#   /code/users/truwase/scripts/arctic_setup/recipe_bird_sql/run_qwen3_32b_bird_grpo_arl_zorro_yes_local_ckpt.sh
-# so the Arctic-RL training engine + ZoRRo dedup + colocated vLLM sampling get
-# the same per-GPU compute as the verl baseline (W&B project skyrl_arctic_rl,
-# converged run k1l3lue5).  The SkyRL knobs are wired through arctic_rl/config.py
-# (build_rl_config); per-DP-rank micro-batch sizing is auto-derived from
-# train_batch_size * n_samples_per_prompt and ulysses_sp.
+# Topology: NUM_NODES=4, GPUS_PER_NODE=8 (DP=32). vLLM TP=4, num_engines=8.
+# train_batch=128 prompts x n_samples=16 = 2048 trajectories/step.
+# Sibling: run_bird_grpo_32b_32gpu_fsdp.sh (same recipe, SkyRL FSDP-native).
 #
-# Purpose: head-to-head per-step E2E timing on 32B vs the stock-SkyRL FSDP
-# baseline (run_bird_grpo_32b_32gpu_fsdp.sh, sibling).
-#
-# Topology (matches verl recipe):
-#   NUM_NODES=4, GPUS_PER_NODE=8     => training_gpus = 32, sampling_gpus = 32
-#   inference_engine.tensor_parallel_size=4, num_engines=8
-#   train_batch_size=128, n_samples_per_prompt=16
-#     => 2048 trajectories/step, 64 trajectories/GPU at DP=32 (ulysses_sp=1)
-#
-# Prereq: 4-node ray cluster on skyrl_v1 env already up (see ../../examples/run_bird_grpo_1.7b_32gpu.sh
-# and HANDOFF_2026-06-22_SKYRL_BIRD.md). ``ray status`` should show 32/32 GPU.
-#
-# Step-1 invariants we still expect (matching the 1.7B run + xid2pl9f):
-#   - actor/ppo_kl == 0, actor/pg_clipfrac == 0, actor/pg_clipfrac_lower == 0
-#   - actor/loss == actor/pg_loss
-# (use_kl_loss=false, use_kl_in_reward=false, update_epochs_per_batch=1)
+# Prereq: 4-node ray cluster up on skyrl_v1 env; `ray status` shows 32/32 GPU.
 
 set -euxo pipefail
 
@@ -85,13 +66,8 @@ NUM_NODES=4
 GPUS_PER_NODE=8
 NUM_GPUS=$((NUM_NODES * GPUS_PER_NODE))   # = 32
 
-# Tunji's verl recipe @ 32 GPUs:
-#   BSZ_PER_GPU=4, PPO_MINI_BSZ_PER_GPU=4 -> BSZ=128, PPO_MINI_BSZ=128
-#   ROLL_N=16 -> 2048 trajectories/step
-# SkyRL: with ulysses_sp=1 + n_samples=16 + 32 training GPUs (DP=32),
-#   train_per_gpu = 128 * 16 / 32 = 64  (mini == train, grad_accum=1 at SkyRL level)
-#   DeepSpeed: micro=16 (n_samples, ZoRRo), grad_accum=64/16=4
-#   _batch_assertion: 16 * 4 * 32 = 2048 == mini_batch  ✓
+# Global batch: 128 prompts x 16 samples = 2048 trajectories. With DP=32 and
+# ulysses_sp=1: per-DP mini=64, ZoRRo micro=16 (n_samples), grad_accum=4.
 TRAIN_BSZ=128
 MINI_BSZ=128
 N_SAMPLES=16
@@ -105,50 +81,27 @@ RESPONSE_LEN=4096
 TP_SIZE=4
 NUM_ENGINES=$((NUM_GPUS / TP_SIZE))
 
-# FCA + speculative decoding — full inference knobs to match the verl recipe.
+# Inference knobs forwarded to ArcticAsyncEngineArgs via
+# trainer.arctic_rl.arctic_inference_config (dict, raw passthrough). SkyRL has
+# no use_fca/spec_model aliases; we ship the three engine kwargs directly.
+#   FCA (use_fca=True in verl)      -> forest_cascade_attn_configs="{}"
+#                                      compilation_config.cudagraph_mode=PIECEWISE
+#   spec-dec (spec_model=path)      -> speculative_config={method: arctic, model, ...}
+# Draft model is per-node local NVMe (/data-fast), not Lustre.
 #
-# Plumbing (SkyRL -> Arctic-Platform -> ArcticAsyncEngineArgs):
-#   trainer.arctic_rl.arctic_inference_config  (dict, SkyRL dataclass field)
-#       => ArcticRLClientConfig.arctic_inference_config
-#       => build_model_config() merges into vllm engine kwargs (extra_engine_kwargs)
-#       => ArcticAsyncEngineArgs(**kwargs)
+# pass_config.fuse_allreduce_rms=false dodges vllm's FlashInfer-fused
+# AllReduce+RMSNorm pass, whose workspace our flashinfer 0.6.6 stack never
+# initializes — asserts during CUDA-graph capture.
 #
-# Tunji's verl recipe uses two convenience aliases on its own arctic_rl config
-#   arctic_rl.use_fca=True
-#   arctic_rl.spec_model=/data-fast/qwen3-32b-bird-4096-3head
-# which arctic-verl/verl/trainer/ppo/arctic_rl_client.py:215 expands into THREE
-# engine kwargs:
-#   use_fca=True     -> compilation_config={cudagraph_mode: PIECEWISE}
-#                       forest_cascade_attn_configs="{}"
-#   spec_model=path  -> speculative_config={method: arctic, model: path,
-#                                            num_speculative_tokens: 3}
-# SkyRL's `arctic_rl` dataclass does NOT have those aliases; it only exposes
-# `arctic_inference_config: dict` which is forwarded raw. So we replicate the
-# same three engine kwargs here verbatim to stay apples-to-apples with verl.
-# (num_speculative_tokens=3 is fixed at 3 by the verl bridge regardless of the
-# draft model's n_predict; we mirror that.)
-#
-# The draft model lives on the local NVMe (/data-fast) on each of the 4 nodes,
-# not on Lustre, so vLLM loads it per-replica from local SSD.
+# OmegaConf.from_cli runs yaml.load on each rhs, so flow-style dicts need a
+# space after every `:` ({k: v, k: v}); Hydra's CLI parser is more lenient.
 USE_FCA=${USE_FCA:-True}
 SPEC_MODEL=${SPEC_MODEL:-/data-fast/qwen3-32b-bird-4096-3head}
 NUM_SPEC_TOKENS=${NUM_SPEC_TOKENS:-3}
 
-# SkyRL's main_base uses OmegaConf.from_cli, which yaml.load()s the value half
-# of each `k=v` arg. YAML flow-style requires a SPACE after every `:` inside
-# `{key: value, key: value}` -- without it the scanner treats `key:value` as a
-# single bare-scalar token. (Hydra's CLI grammar tolerates `key:value`, which
-# is what tripped us up earlier -- different parser, different rules.)
 AI_CFG_PARTS=()
 if [[ "${USE_FCA}" == "True" ]]; then
     AI_CFG_PARTS+=('forest_cascade_attn_configs: "{}"')
-    # pass_config.fuse_allreduce_rms=false: dodge the
-    # `Flashinfer workspace must be initialized when using flashinfer` assert in
-    # vllm/compilation/passes/fusion/allreduce_rms_fusion.py:143 that fired
-    # during CUDA graph capture on our stack. Default-True with cudagraph_mode
-    # PIECEWISE + world_size>=2 rewrites every all_reduce->rms_norm into the
-    # fused FlashInfer kernel, which our flashinfer 0.6.6 + ArcticInference
-    # 6ec09b1 combo never initializes the workspace for.
     AI_CFG_PARTS+=('compilation_config: {cudagraph_mode: PIECEWISE, pass_config: {fuse_allreduce_rms: false}}')
 fi
 if [[ -n "${SPEC_MODEL}" && -d "${SPEC_MODEL}" ]]; then

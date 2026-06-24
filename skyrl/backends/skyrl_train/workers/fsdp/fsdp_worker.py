@@ -185,10 +185,8 @@ class FSDPPolicyWorkerBase(PolicyWorkerBase):
             use_meta_tensor=not model_config.tie_word_embeddings, mesh=self.strategy.device_mesh
         )
 
-        # SKYRL_USE_LIGER opt-in: enables fused linear-CE via
-        # AutoLigerKernelForCausalLM. Critical for large vocab + long context
-        # (Qwen3-32B with vocab=151936 packed-seq up to 36864 + micro>=4 would
-        # otherwise OOM materializing the full LM-head logits tensor on H200).
+        # SKYRL_USE_LIGER=1 -> Liger fused linear-CE (avoids full LM-head
+        # logits materialization for large-vocab + long-context training).
         _use_liger = os.environ.get("SKYRL_USE_LIGER", "0") == "1"
         wrapped_model = HFModelWrapper(
             model_path,

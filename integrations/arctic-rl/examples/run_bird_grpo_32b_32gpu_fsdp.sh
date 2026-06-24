@@ -31,12 +31,9 @@ export VLLM_CACHE_ROOT=<PATH>/vllm
 export VLLM_LOGGING_LEVEL=INFO
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-# Honest native-SkyRL baseline: Liger fused linear-CE is supported in
-# HFModelWrapper but the Qwen3 Liger kernel hits a Triton illegal-memory-
-# access on packed-seq inputs (cu_seqlens=variable, attention_mask=None,
-# explicit position_ids), so the comparison runs WITHOUT Liger. Compensate by
-# dropping micro_train_batch_size_per_gpu to 4 (vs Arctic-RL's 16 enabled by
-# Liger), so the LM-head logits allocation stays under H200 capacity.
+# Liger off: Qwen3 Liger kernel hits a Triton illegal-mem-access on packed-seq
+# inputs (cu_seqlens variable, attention_mask=None). Compensate with micro=2
+# below so LM-head logits fit on H200.
 export SKYRL_USE_LIGER=0
 
 # Same W&B project as the arctic launcher so the two runs sit side-by-side.
