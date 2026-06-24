@@ -253,10 +253,23 @@ def build_rl_config(cfg: SkyRLTrainConfig) -> ArcticRLClientConfig:
         cfg.trainer.placement.policy_num_gpus_per_node
         * cfg.trainer.placement.policy_num_nodes
     )
-    sampling_gpus = cfg.generator.inference_engine.num_engines
+    # Arctic-Platform semantics: ``sampling_gpus`` is the TOTAL number of GPUs
+    # dedicated to sampling, NOT the number of engine replicas. The replica
+    # count is then ``sampling_gpus // tensor_parallel_size`` (see
+    # ``arctic_platform/rl/ray_server.py::ArcticRLRayServerState.initialize``
+    # for ``job_type == "sampling"``). Tunji's verl bridge mirrors this:
+    # ``arctic_rl.sampling_gpus=NGPU_PER_JOB`` (e.g. 32) with
+    # ``arctic_rl.sampling_tp_size=4`` -> 8 replicas. SkyRL's
+    # ``generator.inference_engine.num_engines`` is the REPLICA count, so to
+    # get the same payload we must multiply by ``tensor_parallel_size``.
+    # Without this, e.g. 32B colocated runs with TP=4 + num_engines=8 set
+    # ``sampling_gpus=8`` -> 2 replicas, which (a) silently shrinks the rollout
+    # parallelism by 4x and (b) hangs the orchestrator on the partial set when
+    # the Ray placement layout expects 8.
+    tp_size = cfg.generator.inference_engine.tensor_parallel_size
+    sampling_gpus = cfg.generator.inference_engine.num_engines * tp_size
     colocate = arl.colocate
     vllm_gpu_mem = cfg.generator.inference_engine.gpu_memory_utilization
-    tp_size = cfg.generator.inference_engine.tensor_parallel_size
 
     # -- From ARL-specific config --------------------------------------------
     opt = cfg.trainer.policy.optimizer_config

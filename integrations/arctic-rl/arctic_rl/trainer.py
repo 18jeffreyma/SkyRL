@@ -126,6 +126,21 @@ class ArcticPPOTrainer(RayPPOTrainer):
         data.metadata["global_step"] = self.global_step
         n_samples = self.cfg.generator.n_samples_per_prompt
 
+        # Diagnostic: confirm colocate is wired correctly from the main `cfg`
+        # (Option B). Reading from `cfg.trainer.arctic_rl.colocate` instead of
+        # `_arctic_client.config.colocate` is robust to Arctic-Platform's
+        # reconnect_config() schema strip. With colocate=True the native sleep
+        # path fires naturally via parent train()'s
+        # `if self.colocate_all: await inference_engine_client.sleep()` →
+        # `_ArcticInferenceEngineStub.sleep()` → `sleep_inference(level=2)`.
+        _arl_cfg = getattr(self.cfg.trainer, "arctic_rl", None)
+        _cfg_colocate = bool(getattr(_arl_cfg, "colocate", False)) if _arl_cfg else False
+        logger.info(
+            f"[ArcticPPOTrainer] train_critic_and_policy step={self.global_step}: "
+            f"colocate={_cfg_colocate} "
+            f"colocate_all={getattr(self, 'colocate_all', None)}"
+        )
+
         all_metrics: Dict[str, List[float]] = defaultdict(list)
 
         status = self.dispatch.forward_backward(
@@ -171,8 +186,17 @@ class _ArcticDispatch:
     def __init__(self, cfg: SkyRLTrainConfig, client):
         self.cfg = cfg
         self.client = client
-        self._colocate = client.config.colocate
+        # Read policy flags from the main `cfg` (Hydra/OmegaConf, full schema),
+        # never from `client.config` — Arctic-Platform's
+        # ``ArcticRLRayClient.reconnect_config()`` strips to a minimal
+        # {backend, model_name, *_job_id, comm_protocol} subset for Ray-actor
+        # serialization, dropping `colocate` and other policy flags. Reading
+        # from `client.config.colocate` therefore silently returns the
+        # dataclass default (False) on the worker side. Mirrors Tunji's
+        # arctic-verl pattern: ``self.config = main_config`` on the wrapper,
+        # ``self._client`` is opaque (only used for /reconnect targeting).
         arl = cfg.trainer.arctic_rl
+        self._colocate = bool(getattr(arl, "colocate", False)) if arl is not None else False
         self._cuda_ipc = bool(getattr(arl, "cuda_ipc_weight_sync", False)) if arl is not None else False
         self._low_memory = bool(getattr(arl, "low_memory_weight_sync", False)) if arl is not None else False
 
@@ -733,15 +757,33 @@ class _ArcticInferenceEngineStub:
     pause/resume are no-ops (server manages its own engine).
     """
 
-    def __init__(self, client=None):
+    def __init__(self, client=None, colocate: bool = False):
         self._client = client
+        # `colocate` is sourced from the main `cfg` (cfg.trainer.arctic_rl.colocate)
+        # at construction in entrypoint._setup_trainer, never from
+        # `client.config.colocate` — Arctic-Platform's reconnect_config() strips
+        # the field when shipping the client to Ray actors, so trusting it
+        # silently disables both sleep gates (see _ArcticDispatch.__init__).
+        self._colocate = colocate
 
     async def sleep(self, **kwargs):
-        if self._client and self._client.config.colocate:
-            await self._client.sleep_inference()
+        if self._client and self._colocate:
+            # level=2 (vs the ray_client default level=1) lets vLLM's
+            # CuMemAllocator release the bf16 weight pages in addition to KV
+            # cache. Required for 32B-class models under colocation: at
+            # level=1 the ~64 GiB of weights stay GPU-resident, and the
+            # DeepSpeed worker that shares the GPU OOMs on the first MLP
+            # allocation in step 2 (Liger SwiGLU empty_like). Mirrors
+            # arctic-verl's VLLM_SLEEP_LEVEL=2 default for vLLM >= 0.8.5
+            # (verl/third_party/vllm/__init__.py). Safe because
+            # Arctic-Platform pins offload_weights=False, so cumem keeps
+            # param.data addresses stable across sleep/wake (no CUDA-graph
+            # recompile). The level may be overridden by callers.
+            level = kwargs.get("level", 2)
+            await self._client.sleep_inference(level=level)
 
     async def wake_up(self, **kwargs):
-        if self._client and self._client.config.colocate:
+        if self._client and self._colocate:
             tags = kwargs.get("tags")
             await self._client.wake_inference(tags=tags)
 

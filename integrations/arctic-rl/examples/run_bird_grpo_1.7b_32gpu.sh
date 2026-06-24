@@ -1,35 +1,26 @@
 #!/usr/bin/env bash
-# SkyRL + Arctic RL backend: Qwen3-1.7B BIRD-SQL GRPO recipe.
+# SkyRL + Arctic RL backend: Qwen3-1.7B BIRD-SQL GRPO recipe — 4 nodes / 32 H200s.
 #
-# Mirrors Snowflake-AI-Research/arctic-verl xid2pl9f -- the verl
-# converged-reference BIRD-1.7B run with ``remote_backend.colocate=True``:
-# 269 steps, val reward ~0.59 (exec 0.93 / format 0.99), `ppo_kl=0` and
-# `pg_clipfrac=0` every step. Source recipe:
-# `<PATH>/launch_1.7b_newshape.sh`.
+# Multi-node scale-out of the converged single-node recipe in
+# ``run_bird_grpo_1.7b_8gpu.sh``. Global batch geometry is kept *identical*
+# to the 1-node run (32 prompts × 16 samples = 512 trajectories / step) so
+# the gradient at each optimizer step is the same as st3ue30x / xid2pl9f
+# (up to floating-point reduction order). Per-DP-rank work shrinks 4x,
+# so wall-clock per step is expected to drop from ~180–200 s to ~50–70 s.
 #
-# Key memory knobs propagated to the Arctic DeepSpeed worker (without
-# these the colocated training + vLLM share OOMs on H200 at 96K-token
-# packed sequences -- see arctic_platform/rl/deepspeed_worker.py:147,155,202):
-#   - attn_implementation=flash_attention_3   O(N) attention memory
-#   - use_liger=true                          fused MLP/RMSNorm
-#   - enable_gradient_checkpointing=true      O(sqrt N) activations
-#   - ulysses_sequence_parallel_size=2        per-seq compute split 2-way
-#   - logits_optimization=memory              chunked LM-head compute
-#   - cuda_ipc_weight_sync=true               zero-copy weight push back to vLLM
+# DP math (validated in arctic_rl.config.build_rl_config):
+#   training_gpus      = policy_num_gpus_per_node * policy_num_nodes = 32
+#   ulysses_sp         = 2 -> dp_world = 32 / 2 = 16
+#   mini_batch (global)= train_batch_size * n_samples = 32 * 16 = 512
+#   mini_per_dp        = 512 / 16 = 32
+#   micro_per_gpu      = n_samples = 16   (ZoRRo: each microbatch == one prompt group)
+#   grad_accum         = 32 / 16 = 2
+#   DS assertion:        16 * 2 * 16 = 512 == mini_batch  ✓
 #
-# Toggle to other backends is one CLI flag (`trainer.backend=fsdp` for
-# stock SkyRL, `trainer.backend=arctic_rl` for this integration). No
-# PYTHONPATH gymnastics -- main_base discovers `integrations/arctic-rl/`
-# via `_ensure_backend_importable`.
-#
-# Step-1 invariants we expect (matching xid2pl9f):
-#   - actor/ppo_kl == 0           (single PPO epoch, single mini-batch:
-#                                  old_log_probs == log_probs by construction)
-#   - actor/pg_clipfrac == 0      (no clipping triggers when ratio == 1)
-#   - actor/pg_clipfrac_lower == 0
-#   - actor/loss == actor/pg_loss (no entropy/KL terms, both off in this recipe)
-# Absolute loss / grad_norm magnitudes will differ run-to-run because
-# rollouts differ; the invariants above are the deterministic baseline.
+# Prereq: ray cluster already running across all 4 nodes (head + 3 workers).
+# ``ray status`` should show ``32.0/32.0 GPU`` total. The Arctic client
+# pre-init in arctic_rl/entrypoint.py calls ``ray.init(ignore_reinit_error=True)``
+# and reuses the existing cluster.
 
 set -euxo pipefail
 
@@ -48,13 +39,10 @@ export VLLM_CACHE_ROOT=<PATH>/vllm
 export VLLM_LOGGING_LEVEL=INFO
 export ARCTIC_CUDA_IPC_LOW_MEM=0
 
-# Bypass the strict-weight-sync name check (Qwen3-1.7B has
-# tie_word_embeddings=True, so DeepSpeed ships lm_head.weight while vLLM
-# dedupes it). The clean fix lives in arctic_platform.rl; this env var is the
-# temporary bypass until that PR lands.
+# Bypass the strict-weight-sync name check (Qwen3-1.7B tie_word_embeddings=True).
 export ARCTIC_WEIGHT_SYNC_STRICT_NAMES=0
 
-# WandB (same project as verl PR #6 so the runs sit side-by-side)
+# WandB
 export WANDB_BASE_URL="${WANDB_BASE_URL:-https://<REDACTED_INTERNAL_URL>}"
 export WANDB_API_KEY="${WANDB_API_KEY:-<REDACTED_WANDB_KEY>}"
 export WANDB_PROJECT="${WANDB_PROJECT:-arctic_rl_bird_sql}"
@@ -62,19 +50,41 @@ export WANDB_DISABLE_CODE=True
 
 RUN_TS=$(date -u +%Y%m%dT%H%M%SZ)
 MODEL=${MODEL:-"Qwen/Qwen3-1.7B"}
-EXPERIMENT_NAME=skyrl_bird_grpo_${MODEL##*/}_${RUN_TS}
-CHECKPOINT_DIR=${HOME}/ckpts/${EXPERIMENT_NAME}
+EXPERIMENT_NAME=skyrl_bird_grpo_${MODEL##*/}_4node_${RUN_TS}
+# Multi-node weight sync stages files under ``${CHECKPOINT_DIR}/ckpt/arctic_rl_job_*/weight_sync.pt``.
+# The Arctic IPC weight-sync path on the head writes the file, then all 32
+# vLLM InferenceWorkers across the 4 nodes mmap-read it. ``${HOME}/ckpts``
+# is local SSD per node, so workers can't see it -- use Lustre (/data) which
+# is mounted on all 4 nodes.
+CHECKPOINT_DIR=${CHECKPOINT_DIR:-/data/skyrl-runs/ckpts/${EXPERIMENT_NAME}}
 mkdir -p "${CHECKPOINT_DIR}"
 
-# Mirror verl PR #6: 8 GPUs, all colocated (training + sampling share the
-# same GPUs via Arctic RL server-side colocation).
-NUM_GPUS=8
+# 4 nodes × 8 H200s each.
+NUM_NODES=4
+GPUS_PER_NODE=8
+NUM_GPUS=$((NUM_NODES * GPUS_PER_NODE))   # = 32
 
-# Verl PR #6: BSZ_PER_GPU=4, ROLL_N=16 -> BSZ=32 prompts/batch, 512 trajectories.
-# SkyRL math (validate_batch_sizes):
-#   train_per_gpu = TRAIN_BSZ * N_SAMPLES / NUM_GPUS = 32 * 16 / 8 = 64
-#   mini_per_gpu  = MINI_BSZ  * N_SAMPLES / NUM_GPUS = 32 * 16 / 8 = 64
-#   grad_accum    = 64 / 64 = 1  (matches verl's PPO_MINI_BSZ_PER_GPU == BSZ_PER_GPU)
+# FCA + PIECEWISE cudagraph -- same arctic_inference_config plumbing as the 32B
+# launcher so this run smoke-tests the client-side translation we ship for 32B.
+# No speculative draft for 1.7B (no compatible spec checkpoint).
+#
+# pass_config.fuse_allreduce_rms=false: vLLM's fused AllReduce+RMSNorm pass uses
+# FlashInfer's per-process IPC workspace, which collides between same-node
+# replicas (TP>1 colocated). It's a no-op at TP=1 so disabling it here is free,
+# and we match the 32B path bit-for-bit.
+USE_FCA=${USE_FCA:-True}
+AI_CFG_PARTS=()
+if [[ "${USE_FCA}" == "True" ]]; then
+    AI_CFG_PARTS+=('forest_cascade_attn_configs: "{}"')
+    AI_CFG_PARTS+=('compilation_config: {cudagraph_mode: PIECEWISE, pass_config: {fuse_allreduce_rms: false}}')
+fi
+AI_CFG_OVERRIDE=()
+if (( ${#AI_CFG_PARTS[@]} > 0 )); then
+    IFS=, AI_CFG_BODY="${AI_CFG_PARTS[*]}" ; unset IFS
+    AI_CFG_OVERRIDE+=("trainer.arctic_rl.arctic_inference_config={${AI_CFG_BODY}}")
+fi
+
+# Same global batch as st3ue30x / xid2pl9f.
 TRAIN_BSZ=32
 MINI_BSZ=32
 N_SAMPLES=16
@@ -108,13 +118,14 @@ cd "${SKYRL_DIR}"
     trainer.arctic_rl.use_arctic_inference=true \
     trainer.arctic_rl.server_logs=true \
     trainer.arctic_rl.startup_timeout=1800 \
+    "${AI_CFG_OVERRIDE[@]}" \
     data.train_data="['${DATA_DIR}/train.parquet']" \
     data.val_data="['${DATA_DIR}/val.parquet']" \
     trainer.algorithm.advantage_estimator=grpo \
     trainer.policy.model.path="${MODEL}" \
     trainer.placement.colocate_all=false \
-    trainer.placement.policy_num_gpus_per_node=${NUM_GPUS} \
-    trainer.placement.policy_num_nodes=1 \
+    trainer.placement.policy_num_gpus_per_node=${GPUS_PER_NODE} \
+    trainer.placement.policy_num_nodes=${NUM_NODES} \
     generator.inference_engine.num_engines=${NUM_GPUS} \
     generator.inference_engine.tensor_parallel_size=1 \
     generator.inference_engine.backend=vllm \

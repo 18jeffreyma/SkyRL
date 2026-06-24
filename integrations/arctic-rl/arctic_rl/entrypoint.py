@@ -89,8 +89,15 @@ class ArcticRLExp(BasePPOExp):
         os.makedirs(self.cfg.trainer.export_path, exist_ok=True)
         os.makedirs(self.cfg.trainer.ckpt_path, exist_ok=True)
 
+        # Source `colocate` from the main `cfg` (Hydra/OmegaConf full schema),
+        # never from `self.arctic_client.config.colocate` — see
+        # `_ArcticDispatch.__init__` comment for the reconnect_config() strip
+        # rationale.
+        arl_cfg = getattr(self.cfg.trainer, "arctic_rl", None)
+        cfg_colocate = bool(getattr(arl_cfg, "colocate", False)) if arl_cfg else False
+
         from arctic_rl.trainer import _ArcticInferenceEngineStub
-        ie_stub = _ArcticInferenceEngineStub(client=self.arctic_client)
+        ie_stub = _ArcticInferenceEngineStub(client=self.arctic_client, colocate=cfg_colocate)
 
         tracker = self.get_tracker()
         generator = self.get_generator(self.cfg, self.tokenizer, None)
@@ -105,7 +112,7 @@ class ArcticRLExp(BasePPOExp):
             colocate_pg=self.colocate_pg,
         )
         trainer.build_models()
-        if self.arctic_client.config.colocate:
+        if cfg_colocate:
             trainer.colocate_all = True
         return trainer
 
@@ -133,6 +140,12 @@ def main() -> None:
     logger.info("Pre-initializing ArcticRL jobs (before ray.init)…")
     pre_client = create_arctic_rl_client(rl_config)
     reconnect_cfg = pre_client.reconnect_config()
+    # NOTE: Arctic-Platform's ArcticRLRayClient.reconnect_config() strips the
+    # config down to {backend, model_name, *_job_id, comm_protocol} — it does
+    # NOT carry policy flags like `colocate`. We DO NOT depend on
+    # `_client.config.<flag>` anywhere in the integration; all policy decisions
+    # read from the main `cfg` (Hydra/OmegaConf, full schema) directly. See
+    # `_ArcticDispatch.__init__` and `_setup_trainer` for the source-of-truth.
     # For the ray comm protocol, the client owns an in-process server actor
     # state that must be handed to the reconnecting worker. For http it's None.
     server_state = (
@@ -148,6 +161,12 @@ def main() -> None:
     # Forward ARCTIC_* env vars to Ray workers — moved here from core utils per
     # reviewer feedback (core stays integration-agnostic).
     env_vars.update({k: v for k, v in os.environ.items() if k.startswith("ARCTIC_")})
+    # Forward WANDB_* env vars too. prepare_runtime_environment forwards only
+    # WANDB_API_KEY; on a non-head landing of skyrl_entrypoint (Ray picks any
+    # worker), missing WANDB_BASE_URL silently sends local-wandb keys to
+    # api.wandb.ai (-> CommError 401) and missing WANDB_PROJECT etc. forks the
+    # run to the wrong project. Mirror the ARCTIC_* policy.
+    env_vars.update({k: v for k, v in os.environ.items() if k.startswith("WANDB_")})
     # Make the ``arctic_rl`` integration importable in Ray workers. The driver
     # discovers it via sys.path (added by main_base), but Ray workers inherit
     # only this runtime_env — without it, importing skyrl_entrypoint /

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Native SkyRL FSDP backend: Qwen3-32B BIRD-SQL GRPO recipe — 4 nodes / 32 H200s.
+#
+# Sibling of run_bird_grpo_32b_32gpu.sh: SAME model, SAME data, SAME hyperparams,
+# SAME placement, SAME WandB project — only the training backend differs.
+# Apples-to-apples E2E time-per-step comparison vs the Arctic RL backend.
+#
+# Differences vs the arctic launcher:
+#   - trainer.backend=fsdp (drop arctic_rl flags entirely)
+#   - generator stays vLLM, no ArcticInference (no FCA, no speculative decoding)
+#   - trainer.placement.colocate_all=true (native SkyRL colocation, not Arctic's)
+#   - No CUDA-IPC weight sync (uses SkyRL's native FSDP weight sync)
+#
+# Same prereqs: 4-node ray cluster on skyrl_v1 env up, HF Qwen3-32B downloaded.
+
+set -euxo pipefail
+
+SKYRL_DIR=<PATH>/sky-checkouts/SkyRL
+DATA_DIR=${DATA_DIR:-"<PATH>/open-source-text2sql"}
+PYBIN=/home/yak/miniconda3/envs/skyrl_v1/bin/python
+
+export PYTHONUNBUFFERED=1
+export HYDRA_FULL_ERROR=1
+export RAY_DEDUP_LOGS=0
+export HF_HOME="${HF_HOME:-<PATH>}"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export TORCH_COMPILE_DISABLE=1
+export VLLM_DISABLE_COMPILE_CACHE=1
+export VLLM_CACHE_ROOT=<PATH>/vllm
+export VLLM_LOGGING_LEVEL=INFO
+export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Honest native-SkyRL baseline: Liger fused linear-CE is supported in
+# HFModelWrapper but the Qwen3 Liger kernel hits a Triton illegal-memory-
+# access on packed-seq inputs (cu_seqlens=variable, attention_mask=None,
+# explicit position_ids), so the comparison runs WITHOUT Liger. Compensate by
+# dropping micro_train_batch_size_per_gpu to 4 (vs Arctic-RL's 16 enabled by
+# Liger), so the LM-head logits allocation stays under H200 capacity.
+export SKYRL_USE_LIGER=0
+
+# Same W&B project as the arctic launcher so the two runs sit side-by-side.
+export WANDB_BASE_URL="${WANDB_BASE_URL:-https://<REDACTED_INTERNAL_URL>}"
+export WANDB_API_KEY="${WANDB_API_KEY:-<REDACTED_WANDB_KEY>}"
+export WANDB_PROJECT="${WANDB_PROJECT:-skyrl_arctic_rl}"
+export WANDB_DISABLE_CODE=True
+
+# Resolve local Qwen3-32B HF snapshot — same dance as the arctic launcher.
+HF_REPO="models--Qwen--Qwen3-32B"
+MODEL_REPO_DIR="${HF_HOME}/hub/${HF_REPO}"
+if [[ ! -f "${MODEL_REPO_DIR}/refs/main" ]]; then
+    echo "ERROR: missing ${MODEL_REPO_DIR}/refs/main — download Qwen3-32B to HF_HOME first"
+    exit 1
+fi
+COMMIT=$(cat "${MODEL_REPO_DIR}/refs/main")
+SNAPSHOT_PATH="${MODEL_REPO_DIR}/snapshots/${COMMIT}"
+if [[ ! -d "${SNAPSHOT_PATH}" ]]; then
+    echo "ERROR: missing snapshot ${SNAPSHOT_PATH}"
+    exit 1
+fi
+echo "MODEL_SNAPSHOT=${SNAPSHOT_PATH}"
+MODEL="${SNAPSHOT_PATH}"
+
+RUN_TS=$(date -u +%Y%m%dT%H%M%SZ)
+EXPERIMENT_NAME=skyrl_bird_grpo_Qwen3-32B_fsdp_4node_${RUN_TS}
+CHECKPOINT_DIR=${CHECKPOINT_DIR:-/data/skyrl-runs/ckpts/${EXPERIMENT_NAME}}
+mkdir -p "${CHECKPOINT_DIR}"
+
+NUM_NODES=4
+GPUS_PER_NODE=8
+NUM_GPUS=$((NUM_NODES * GPUS_PER_NODE))
+
+# Same batch math as the arctic launcher.
+TRAIN_BSZ=128
+MINI_BSZ=128
+N_SAMPLES=16
+LR=2e-6
+PROMPT_LEN=32768
+RESPONSE_LEN=4096
+
+TP_SIZE=4
+NUM_ENGINES=$((NUM_GPUS / TP_SIZE))
+
+cd "${SKYRL_DIR}"
+
+FSDP_BIRD_ENTRY="${SKYRL_DIR}/integrations/arctic-rl/examples/fsdp_bird_entry.py"
+
+"${PYBIN}" "${FSDP_BIRD_ENTRY}" \
+    data.train_data="['${DATA_DIR}/train.parquet']" \
+    data.val_data="['${DATA_DIR}/val.parquet']" \
+    trainer.algorithm.advantage_estimator=grpo \
+    trainer.policy.model.path="${MODEL}" \
+    trainer.strategy=fsdp2 \
+    trainer.placement.colocate_all=true \
+    trainer.placement.policy_num_gpus_per_node=${GPUS_PER_NODE} \
+    trainer.placement.policy_num_nodes=${NUM_NODES} \
+    trainer.policy.fsdp_config.cpu_offload=false \
+    trainer.policy.fsdp_config.reshard_after_forward=true \
+    trainer.policy.optimizer_config.offload_after_step=true \
+    trainer.policy.sequence_parallel_size=1 \
+    trainer.flash_attn=true \
+    trainer.micro_train_batch_size_per_gpu=${MICRO_TRAIN:-2} \
+    trainer.micro_forward_batch_size_per_gpu=${MICRO_FWD:-2} \
+    trainer.use_sample_packing=true \
+    generator.inference_engine.num_engines=${NUM_ENGINES} \
+    generator.inference_engine.tensor_parallel_size=${TP_SIZE} \
+    generator.inference_engine.backend=vllm \
+    generator.inference_engine.run_engines_locally=true \
+    generator.inference_engine.gpu_memory_utilization=0.5 \
+    generator.inference_engine.async_engine=true \
+    generator.batched=true \
+    trainer.epochs=1 \
+    trainer.eval_batch_size=32 \
+    trainer.eval_before_train=false \
+    trainer.eval_interval=100 \
+    trainer.update_epochs_per_batch=1 \
+    trainer.train_batch_size=${TRAIN_BSZ} \
+    trainer.policy_mini_batch_size=${MINI_BSZ} \
+    trainer.max_prompt_length=${PROMPT_LEN} \
+    generator.sampling_params.max_generate_length=${RESPONSE_LEN} \
+    generator.sampling_params.temperature=1.0 \
+    generator.sampling_params.top_p=1.0 \
+    generator.eval_sampling_params.max_generate_length=${RESPONSE_LEN} \
+    generator.eval_sampling_params.temperature=0.0 \
+    generator.eval_sampling_params.top_p=1.0 \
+    generator.eval_sampling_params.top_k=-1 \
+    generator.eval_n_samples_per_prompt=1 \
+    trainer.policy.optimizer_config.lr=${LR} \
+    trainer.policy.optimizer_config.max_grad_norm=1.0 \
+    trainer.algorithm.use_kl_loss=false \
+    trainer.algorithm.use_kl_in_reward=false \
+    environment.env_class=bird \
+    generator.n_samples_per_prompt=${N_SAMPLES} \
+    trainer.logger=wandb \
+    trainer.project_name="${WANDB_PROJECT}" \
+    trainer.run_name="${EXPERIMENT_NAME}" \
+    trainer.resume_mode=null \
+    trainer.log_path="${CHECKPOINT_DIR}/logs" \
+    trainer.ckpt_path="${CHECKPOINT_DIR}/ckpt" \
+    trainer.ckpt_interval=-1 \
+    "$@"
