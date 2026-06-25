@@ -7,9 +7,9 @@ Defines:
 - ``build_rl_config(cfg)``: translates ``SkyRLTrainConfig`` → ``ArcticRLClientConfig``
 
 These live in the integration to keep core SkyRL integration-agnostic — core only
-knows about a generic ``trainer.backend: str`` field that lazily dispatches here.
-All shared knobs (GPU counts, vLLM settings, colocation) are derived from existing
-SkyRL config fields by ``build_rl_config``.
+knows about a generic ``trainer.override_entrypoint: Optional[str]`` field that
+lazily dispatches here. All shared knobs (GPU counts, vLLM settings, colocation)
+are derived from existing SkyRL config fields by ``build_rl_config``.
 """
 
 from dataclasses import dataclass, field
@@ -210,16 +210,15 @@ class ArcticRLTrainerConfig(BaseConfig):
 
 @dataclass
 class ArcticTrainerConfig(TrainerConfig):
-    """``TrainerConfig`` extended with the Arctic RL field.  Used only when
-    ``trainer.backend == "arctic_rl"`` is set in the recipe."""
+    """``TrainerConfig`` extended with the Arctic RL field. Used when
+    ``trainer.override_entrypoint=integrations.arctic_rl.entrypoint`` is set."""
 
     arctic_rl: Optional[ArcticRLTrainerConfig] = None
-    """Arctic RL backend settings.  ``None`` falls back to defaults."""
+    """Arctic RL backend settings. ``None`` falls back to defaults."""
 
 
-# Top-level config for arctic_rl recipes.  Used by the integration's entrypoint
-# either directly (``uv run -m integrations.arctic_rl.entrypoint``) or via core
-# dispatch (``trainer.backend=arctic_rl`` from ``main_base``).
+# Top-level config for arctic_rl recipes; parsed by the integration's entrypoint
+# after core dispatch (``trainer.override_entrypoint=integrations.arctic_rl.entrypoint``).
 ArcticSkyRLConfig = make_config(trainer_cls=ArcticTrainerConfig)
 
 

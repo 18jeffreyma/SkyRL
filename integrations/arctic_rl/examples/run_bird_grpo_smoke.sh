@@ -4,7 +4,7 @@
 # Same model, same backend, same wire protocol, same env / WandB project
 # — only the batch and rollout shape are shrunk so each iteration spends
 # ~30s in generate instead of ~7-8min. Use this when iterating on the
-# Arctic-RL wire-protocol bridge (`integrations/arctic-rl/arctic_rl/trainer.py`)
+# Arctic-RL wire-protocol bridge (`integrations/arctic_rl/trainer.py`)
 # — every wire-shape transformation, meta dict key, post-processor
 # chain, and verl_grpo loss-config path is exercised identically to the
 # full BIRD recipe.
@@ -65,7 +65,7 @@ RESPONSE_LEN=${RESPONSE_LEN:-512}
 cd "${SKYRL_DIR}"
 
 "${PYBIN}" -m skyrl.train.entrypoints.main_base \
-    trainer.backend=arctic_rl \
+    trainer.override_entrypoint=integrations.arctic_rl.entrypoint \
     trainer.arctic_rl={} \
     trainer.arctic_rl.colocate=true \
     trainer.arctic_rl.zero_stage=3 \

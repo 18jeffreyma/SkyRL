@@ -54,7 +54,7 @@ Arctic RL Server (own Ray cluster, all GPUs)
 
 ```bash
 # Clone arctic-skyrl (client)
-git clone https://github.com/snowflake-eng/arctic-skyrl.git
+git clone https://github.com/<REDACTED_INTERNAL_REPO>.git
 cd arctic-skyrl
 git checkout arctic-rl-integration
 pip install -e ".[arctic-rl]"
@@ -132,29 +132,23 @@ DeepSpeed config is set automatically:
 ## File Structure
 
 ```
-integrations/arctic-rl/                # under integrations/, sibling of skyrl/
-├── README.md                         # This file
-├── arctic_rl/                        # importable Python package
-│   ├── __init__.py                   # Exports ArcticPPOTrainer, ArcticGenerator
-│   ├── trainer.py                    # ArcticPPOTrainer: routes training to server
-│   ├── generator.py                  # ArcticGenerator: routes generation to server vLLM
-│   ├── config.py                     # ArcticRLClientConfig builder
-│   └── entrypoint.py                 # Entrypoint: sets up client + server
+integrations/arctic_rl/                # importable as integrations.arctic_rl
+├── README.md
+├── __init__.py                       # exports ArcticPPOTrainer, ArcticGenerator
+├── trainer.py                        # ArcticPPOTrainer: routes training to server
+├── generator.py                      # ArcticGenerator: routes generation to server vLLM
+├── config.py                         # ArcticRLTrainerConfig + build_rl_config
+├── entrypoint.py                     # dispatched here from main_base
+├── envs/                             # bird env registration
 └── examples/
-    ├── setup_arctic_rl.sh            # One-command env setup
-    └── run_gsm8k_grpo_4gpu.sh        # Launch script for GSM8K GRPO
-
-skyrl/train/entrypoints/
-└── main_base.py                      # 5-line shim that routes to arctic_rl
-                                      # when trainer.arctic_rl is set in config
+    └── run_*.sh                      # launchers (call main_base with override_entrypoint)
 ```
 
-The outer folder is at `integrations/arctic-rl/` (top-level `integrations/` namespace)
-of `skyrl/`, matching the legacy `skyrl-tx/` placement. The inner Python
-package uses underscore (`arctic_rl`, the standard Python module name
-convention). It is distinct from the upstream `arctic_training` package's
-`arctic_training.arctic_rl` sub-namespace — both coexist at import time
-without collision.
+`integrations/` is a PEP 420 namespace package (no `__init__.py`); the
+`arctic_rl` package below it is reachable as `integrations.arctic_rl` from
+the SkyRL repo root with no `PYTHONPATH` setup. It is distinct from the
+upstream `arctic_training` PyPI package's `arctic_training.arctic_rl`
+sub-namespace — both coexist at import time without collision.
 
 ## How It Works
 
@@ -175,5 +169,5 @@ without collision.
 
 ## Companion PRs
 
-- **Client (this repo)**: [`arctic-rl-integration`](https://github.com/snowflake-eng/arctic-skyrl/compare/arctic-rl-integration) branch
+- **Client (this repo)**: [`arctic-rl-integration`](https://github.com/<REDACTED_INTERNAL_REPO>/compare/arctic-rl-integration) branch
 - **Server (ArcticTraining-dss)**: [`arctic-rl-grpo-loss`](https://github.com/snowflakedb/ArcticTraining/compare/arctic-rl-grpo-loss) branch — PR [#20](https://github.com/snowflakedb/ArcticTraining/pull/20)

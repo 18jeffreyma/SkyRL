@@ -1,16 +1,10 @@
-"""Entrypoint for training with the Arctic RL backend.
+"""Arctic RL entrypoint. Launches an ``ArcticRLClient`` (GPU work runs on the
+Arctic server) and wires it into SkyRL's trainer/generator.
 
-Launches an ``ArcticRLClient`` (on-prem local server mode by default)
-and wires it into SkyRL's trainer and generator.  No FSDP/Megatron GPU
-workers are created — all GPU work happens on the Arctic RL server.
-
-GPU layout and colocation are configured via standard SkyRL knobs;
-ARL-specific settings live under ``trainer.arctic_rl`` (see
-``ArcticRLTrainerConfig``).
-
-This entrypoint is invoked indirectly by ``skyrl.train.entrypoints.main_base``
-when ``trainer.arctic_rl is not None``. Researchers should use the standard
-``main_base`` entrypoint and switch backends via config alone.
+Invoked via ``trainer.override_entrypoint=integrations.arctic_rl.entrypoint``
+on the ``skyrl.train.entrypoints.main_base`` command line. ARL-specific knobs
+live under ``trainer.arctic_rl`` (see ``ArcticRLTrainerConfig`` in
+``.config``).
 """
 
 import os
@@ -25,8 +19,8 @@ from skyrl.train.config import SkyRLTrainConfig
 from skyrl.train.entrypoints.main_base import BasePPOExp
 from skyrl.train.utils import validate_cfg
 
-from arctic_rl import ArcticGenerator, ArcticPPOTrainer
-from arctic_rl.config import build_rl_config
+from . import ArcticGenerator, ArcticPPOTrainer
+from .config import build_rl_config
 
 
 class ArcticRLExp(BasePPOExp):
@@ -93,7 +87,7 @@ class ArcticRLExp(BasePPOExp):
         arl_cfg = getattr(self.cfg.trainer, "arctic_rl", None)
         cfg_colocate = bool(getattr(arl_cfg, "colocate", False)) if arl_cfg else False
 
-        from arctic_rl.trainer import _ArcticInferenceEngineStub
+        from .trainer import _ArcticInferenceEngineStub
         ie_stub = _ArcticInferenceEngineStub(client=self.arctic_client, colocate=cfg_colocate)
 
         tracker = self.get_tracker()
@@ -125,11 +119,10 @@ def skyrl_entrypoint(
 
 
 def main() -> None:
-    """Arctic RL entrypoint. Reachable two ways: direct (``uv run -m
-    arctic_rl.entrypoint``) or via core dispatch (``python -m
-    skyrl.train.entrypoints.main_base trainer.backend=arctic_rl``).
-    Both paths parse with ``ArcticSkyRLConfig`` here."""
-    from arctic_rl.config import ArcticSkyRLConfig
+    """Arctic RL entrypoint. Dispatched here by ``main_base`` when
+    ``trainer.override_entrypoint=integrations.arctic_rl.entrypoint`` is set on
+    the CLI. Parses with ``ArcticSkyRLConfig`` (core config + ``trainer.arctic_rl``)."""
+    from .config import ArcticSkyRLConfig
     cfg = ArcticSkyRLConfig.from_cli_overrides(sys.argv[1:])
     validate_cfg(cfg)
 
@@ -158,23 +151,17 @@ def main() -> None:
     # WANDB_API_KEY; missing WANDB_BASE_URL sends local-wandb keys to
     # api.wandb.ai (-> 401) when skyrl_entrypoint lands on a non-head worker.
     env_vars.update({k: v for k, v in os.environ.items() if k.startswith("WANDB_")})
-    # Make the ``arctic_rl`` integration importable in Ray workers. The driver
-    # discovers it via sys.path (added by main_base), but Ray workers inherit
-    # only this runtime_env — without it, importing skyrl_entrypoint /
-    # deserializing the ArcticSkyRLConfig fails with ``No module named
-    # 'arctic_rl'``. ``parents[1]`` of this file is the dir holding the package.
-    _integration_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    _existing_pp = env_vars.get("PYTHONPATH") or os.environ.get("PYTHONPATH", "")
-    env_vars["PYTHONPATH"] = _integration_root + (
-        os.pathsep + _existing_pp if _existing_pp else ""
+    # Forward the SkyRL repo root on Ray workers' PYTHONPATH so they can import
+    # ``integrations.arctic_rl.*`` when deserializing the skyrl_entrypoint task.
+    _repo_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
+    _existing_pp = env_vars.get("PYTHONPATH") or os.environ.get("PYTHONPATH", "")
+    env_vars["PYTHONPATH"] = _repo_root + (os.pathsep + _existing_pp if _existing_pp else "")
     runtime_env = {"env_vars": env_vars}
-    # arctic_platform.rl.create_arctic_rl_client(ray) starts a GPU Ray cluster
-    # during pre-init above, so the driver-side ray.init must (a) reuse it
-    # (ignore_reinit_error) and (b) pass runtime_env at TASK granularity
-    # rather than via init — init's runtime_env is ignored on the second call
-    # to an already-initialized cluster, which would silently drop our
-    # PYTHONPATH and crash workers with `ModuleNotFoundError: arctic_rl`.
+    # create_arctic_rl_client(ray) above started a Ray cluster; reuse it via
+    # ignore_reinit_error and pass runtime_env at TASK granularity (init's
+    # runtime_env is ignored on the second call to an already-initialized cluster).
     ray.init(num_gpus=0, runtime_env=runtime_env, ignore_reinit_error=True)
     ray.get(
         skyrl_entrypoint.options(runtime_env=runtime_env).remote(

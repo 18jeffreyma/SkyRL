@@ -82,19 +82,14 @@ TP_SIZE=4
 NUM_ENGINES=$((NUM_GPUS / TP_SIZE))
 
 # Inference knobs forwarded to ArcticAsyncEngineArgs via
-# trainer.arctic_rl.arctic_inference_config (dict, raw passthrough). SkyRL has
-# no use_fca/spec_model aliases; we ship the three engine kwargs directly.
-#   FCA (use_fca=True in verl)      -> forest_cascade_attn_configs="{}"
-#                                      compilation_config.cudagraph_mode=PIECEWISE
-#   spec-dec (spec_model=path)      -> speculative_config={method: arctic, model, ...}
-# Draft model is per-node local NVMe (/data-fast), not Lustre.
+# trainer.arctic_rl.arctic_inference_config (raw passthrough):
+#   FCA: forest_cascade_attn_configs={} + cudagraph_mode=PIECEWISE; the
+#        fuse_allreduce_rms=false pass_config dodges a flashinfer 0.6.6
+#        workspace-init assert during CUDA-graph capture.
+#   Spec-dec: speculative_config={method: arctic, model: <path>, ...}.
 #
-# pass_config.fuse_allreduce_rms=false dodges vllm's FlashInfer-fused
-# AllReduce+RMSNorm pass, whose workspace our flashinfer 0.6.6 stack never
-# initializes — asserts during CUDA-graph capture.
-#
-# OmegaConf.from_cli runs yaml.load on each rhs, so flow-style dicts need a
-# space after every `:` ({k: v, k: v}); Hydra's CLI parser is more lenient.
+# Flow-style dict values need a space after every `:` — OmegaConf.from_cli
+# runs yaml.load on each rhs (Hydra's CLI parser is more lenient).
 USE_FCA=${USE_FCA:-True}
 SPEC_MODEL=${SPEC_MODEL:-/data-fast/qwen3-32b-bird-4096-3head}
 NUM_SPEC_TOKENS=${NUM_SPEC_TOKENS:-3}
@@ -117,7 +112,7 @@ fi
 cd "${SKYRL_DIR}"
 
 "${PYBIN}" -m skyrl.train.entrypoints.main_base \
-    trainer.backend=arctic_rl \
+    trainer.override_entrypoint=integrations.arctic_rl.entrypoint \
     trainer.arctic_rl={} \
     trainer.arctic_rl.colocate=true \
     trainer.arctic_rl.zero_stage=3 \

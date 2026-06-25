@@ -634,14 +634,13 @@ class TrainerConfig(BaseConfig):
     rope_scaling: Optional[Dict[str, Any]] = None
     rope_theta: Optional[float] = None
 
-    backend: str = "fsdp"
-    """Training backend (which trainer implementation runs the step). ``"fsdp"``
-    is the standard in-process SkyRL path. Any other value names an integration
-    package shipped under ``integrations/<dir>/<backend>/`` that ``main_base``
-    discovers on ``sys.path`` and dispatches to (``<backend>.entrypoint:main``),
-    letting that integration parse its own extended config. Distinct from
-    ``trainer.strategy`` (``fsdp2``/``megatron``/…), which selects the
-    parallelism/sharding strategy *within* the default backend."""
+    override_entrypoint: Optional[str] = None
+    """Dotted module path to an integration's entrypoint
+    (e.g. ``integrations.arctic_rl.entrypoint``). When set, ``main_base.main()``
+    peeks this from the CLI before strict config parsing and dispatches to
+    ``<module>.main()``, letting the integration parse its own extended config
+    (typically via ``make_config(trainer_cls=<ext>)``). ``None`` (default) runs
+    the standard in-process SkyRL path."""
 
     def __post_init__(self):
         # ref model defaults to the policy model

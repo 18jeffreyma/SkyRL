@@ -6,7 +6,7 @@
 # Apples-to-apples E2E time-per-step comparison vs the Arctic RL backend.
 #
 # Differences vs the arctic launcher:
-#   - trainer.backend=fsdp (drop arctic_rl flags entirely)
+#   - no trainer.override_entrypoint (default core FSDP path; drop all arctic_rl flags)
 #   - generator stays vLLM, no ArcticInference (no FCA, no speculative decoding)
 #   - trainer.placement.colocate_all=true (native SkyRL colocation, not Arctic's)
 #   - No CUDA-IPC weight sync (uses SkyRL's native FSDP weight sync)
@@ -80,7 +80,7 @@ NUM_ENGINES=$((NUM_GPUS / TP_SIZE))
 
 cd "${SKYRL_DIR}"
 
-FSDP_BIRD_ENTRY="${SKYRL_DIR}/integrations/arctic-rl/examples/fsdp_bird_entry.py"
+FSDP_BIRD_ENTRY="${SKYRL_DIR}/integrations/arctic_rl/examples/fsdp_bird_entry.py"
 
 "${PYBIN}" "${FSDP_BIRD_ENTRY}" \
     data.train_data="['${DATA_DIR}/train.parquet']" \
