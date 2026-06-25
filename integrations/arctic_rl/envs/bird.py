@@ -3,10 +3,13 @@ r"""BIRD SQL env for skyrl-gym, mirroring the verl PR #6 reward contract.
 Single-turn env: the model emits a response containing one SQL query inside a
 ``<think>...</think>`` block followed by a ```` ```sql ... ``` ```` block (the
 arctic_text_to_sql_r1 format). We hand the full response and the gold SQL +
-per-sample SQLite path to
-``arctic_platform.rl.projects.txt2sql.bird_reward.compute_score`` — the *same*
+per-sample SQLite path to ``.bird_reward.compute_score`` — the *same*
 reward function the validated verl PR #6 run used — and surface its ``score``
 field as the GRPO reward.
+
+The reward function is vendored at
+``integrations/arctic_rl/envs/bird_reward.py`` so the integration doesn't
+depend on a private Arctic-Platform recipe branch.
 
 Why a SkyRL-side env at all?  The Arctic RL server is reward-agnostic; reward
 scoring runs client-side via skyrl-gym (see ``ArcticGenerator.generate``).
@@ -28,7 +31,7 @@ verl-format parquet — no schema rewriting needed):
 
 from typing import Any, Dict
 
-from arctic_platform.rl.projects.txt2sql.bird_reward import compute_score
+from .bird_reward import compute_score
 from skyrl_gym.envs.base_text_env import BaseTextEnv, BaseTextEnvStepOutput
 
 
