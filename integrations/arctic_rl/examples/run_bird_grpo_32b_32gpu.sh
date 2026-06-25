@@ -9,9 +9,9 @@
 
 set -euxo pipefail
 
-SKYRL_DIR=<PATH>/sky-checkouts/SkyRL
+SKYRL_DIR=${SKYRL_DIR:-<PATH>/sky-checkouts/SkyRL}
 DATA_DIR=${DATA_DIR:-"<PATH>/open-source-text2sql"}
-PYBIN=/home/yak/miniconda3/envs/skyrl_v1/bin/python
+PYBIN=${PYBIN:-/home/yak/miniconda3/envs/skyrl_v1/bin/python}
 
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
