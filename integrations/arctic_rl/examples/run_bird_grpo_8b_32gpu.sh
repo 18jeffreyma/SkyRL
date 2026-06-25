@@ -1,67 +1,54 @@
 #!/usr/bin/env bash
-# SkyRL + Arctic RL backend: Qwen3-32B BIRD-SQL GRPO — 4 nodes / 32 H200s.
+# SkyRL + Arctic RL backend: Qwen3-8B BIRD-SQL GRPO — 4 nodes / 32 H200s.
 #
-# Topology: NUM_NODES=4, GPUS_PER_NODE=8 (DP=32). vLLM TP=4, num_engines=8.
-# train_batch=128 prompts x n_samples=16 = 2048 trajectories/step.
-# Sibling: run_bird_grpo_32b_32gpu_fsdp.sh (same recipe, SkyRL FSDP-native).
+# Same recipe as run_bird_grpo_32b_32gpu.sh (TP=4, FCA,
+# CUDA-IPC weight sync, ZoRRo, Liger), except:
+#   - MODEL is Qwen3-8B (~16GB bf16) instead of Qwen3-32B.
+#   - Speculative decoding is disabled by default: the 32B spec head
+#     (/data-fast/qwen3-32b-bird-4096-3head) is architecturally tied to
+#     Qwen3-32B and won't load on Qwen3-8B. Drop in an 8B-trained 3-head
+#     checkpoint via SPEC_MODEL=... to re-enable.
 #
-# Prereq: 4-node ray cluster up; `ray status` shows 32/32 GPU.
+# Use this as a faster (~4-5x step time) iteration target for the same TP>1
+# code path the 32B run exercises.
 
 set -euxo pipefail
 
 SKYRL_DIR=${SKYRL_DIR:-$(cd "$(dirname "$0")"/../../.. && pwd)}
 DATA_DIR=${DATA_DIR:-"$HOME/data/bird"}
 PYBIN=${PYBIN:-python}
-# FlashAttention impl: flash_attention_2 (broadly available) or flash_attention_3
-# (Hopper-only, build from source from Dao-AILab/flash-attention hopper subdir).
 ATTN_IMPL=${ATTN_IMPL:-flash_attention_2}
 
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
-# Default to ONLINE (auto-download missing models). Set OFFLINE=1 to disable
-# (e.g. on isolated clusters where the model is pre-staged in HF_HOME).
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-0}"
 export TORCH_COMPILE_DISABLE=1
 export VLLM_DISABLE_COMPILE_CACHE=1
-# Disable torch.inductor's on-disk cache too. Without this, a prior run that
-# baked in `flashinfer_trtllm_fused_allreduce_norm` (when fuse_allreduce_rms
-# was on) reuses that compiled graph and asserts during warm-up:
-#   AssertionError: Flashinfer workspace must be initialized when using flashinfer
-# VLLM_DISABLE_COMPILE_CACHE only covers vLLM's own cache, not inductor's.
+# Also disable torch.inductor's on-disk cache; see 32B launcher for the
+# stale-compiled-graph rationale.
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$HOME/.cache/vllm}"
 export VLLM_LOGGING_LEVEL=INFO
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
 export ARCTIC_CUDA_IPC_LOW_MEM=0
-# 32B + tie_word_embeddings is False, but keep the bypass on — it's a no-op
-# when names match and a safety net if upstream Qwen3 adds new tied buffers.
 export ARCTIC_WEIGHT_SYNC_STRICT_NAMES=0
-# verl 32B recipe ships this; helps with the 32B optimizer-state CPU offload churn.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# WandB — set WANDB_API_KEY in your environment to enable logging; override
-# WANDB_PROJECT to write to a different project.
 export WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_PROJECT="${WANDB_PROJECT:-skyrl_arctic_rl}"
 export WANDB_DISABLE_CODE=True
 
-# Model: pass the HF id by default — transformers/vLLM auto-download to
-# HF_HOME on first use. If you've pre-staged the snapshot (multi-node
-# shared cache), set MODEL=<absolute snapshot path> to skip the hub lookup.
-MODEL="${MODEL:-Qwen/Qwen3-32B}"
+MODEL="${MODEL:-Qwen/Qwen3-8B}"
 echo "MODEL=${MODEL}"
 
 RUN_TS=$(date -u +%Y%m%dT%H%M%SZ)
-EXPERIMENT_NAME=skyrl_bird_grpo_Qwen3-32B_arctic_zorro_4node_${RUN_TS}
-# CHECKPOINT_DIR should be on a shared filesystem visible to all nodes
-# (head writes weight-sync tensor, all nodes mmap-read it).
+EXPERIMENT_NAME=skyrl_bird_grpo_Qwen3-8B_arctic_zorro_4node_${RUN_TS}
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-${HOME}/skyrl-runs/ckpts/${EXPERIMENT_NAME}}
 mkdir -p "${CHECKPOINT_DIR}"
 
-# BIRD-SQL parquets are bring-your-own (no public prep script).
 if [[ ! -f "${DATA_DIR}/train.parquet" || ! -f "${DATA_DIR}/val.parquet" ]]; then
     echo "ERROR: BIRD-SQL parquets not found at ${DATA_DIR}/{train,val}.parquet"
     echo "       Stage your own BIRD-SQL train/val parquets and set DATA_DIR."
@@ -70,10 +57,8 @@ fi
 
 NUM_NODES=4
 GPUS_PER_NODE=8
-NUM_GPUS=$((NUM_NODES * GPUS_PER_NODE))   # = 32
+NUM_GPUS=$((NUM_NODES * GPUS_PER_NODE))
 
-# Global batch: 128 prompts x 16 samples = 2048 trajectories. With DP=32 and
-# ulysses_sp=1: per-DP mini=64, ZoRRo micro=16 (n_samples), grad_accum=4.
 TRAIN_BSZ=128
 MINI_BSZ=128
 N_SAMPLES=16
@@ -82,51 +67,29 @@ LR=2e-6
 PROMPT_LEN=32768
 RESPONSE_LEN=4096
 
-# vLLM sampling TP — verl recipe uses TP=4 (Qwen3-32B doesn't fit per-GPU at
-# bf16 + 0.5 mem_util headroom on H200). 32 GPUs / TP=4 -> 8 engine replicas.
+# Same TP=4 as 32B to exercise the same multi-rank flashinfer code path.
 TP_SIZE=4
 NUM_ENGINES=$((NUM_GPUS / TP_SIZE))
 
 # Inference knobs forwarded to ArcticAsyncEngineArgs via
-# trainer.arctic_rl.arctic_inference_config (raw passthrough):
-#   FCA: forest_cascade_attn_configs={} + cudagraph_mode=PIECEWISE.
-#   pass_config.fuse_allreduce_rms=false: with 8 replicas x TP=4 colocated
-#        2-per-node, the two co-located replicas race for FlashInfer's
-#        per-process AllReduce IPC port; the loser gets EADDRINUSE, the
-#        pass marks itself disabled, but the already-emitted graph nodes
-#        still call into the workspace -> assert during CUDA-graph warmup
-#        (`Flashinfer workspace must be initialized when using flashinfer`).
-#        Disabling the fuse pass avoids the contested port entirely.
-#        Tunji's verl recipe doesn't trip this because it co-locates one
-#        sampling replica per node.
-#   Spec-dec: speculative_config={method: arctic, model: <path>, ...}.
-#
-# These nested dicts are routed to vLLM by integrations.arctic_rl.config,
-# which round-trips them through OmegaConf.to_container so AsyncEngineArgs
-# sees plain dicts (the nested-override hook uses `isinstance(_, dict)`,
-# which is False for omegaconf.DictConfig and silently drops the value).
-# Same idiom as arctic-verl/verl/workers/remote_client/arctic_rl.py.
-#
-# KNOWN ISSUE (open, see follow-up): the OmegaConf round-trip alone is
-# *not* sufficient end-to-end in this checkout — the nested
-# compilation_config is still being dropped somewhere between
-# ArcticRLClientConfig and AsyncEngineArgs.__post_init__ (vLLM resolves
-# cudagraph_mode=FULL_AND_PIECEWISE and fuse_allreduce_rms=True at engine
-# init, even with this override set). Until that plumbing is traced and
-# fixed end-to-end, we pin optimization_level=1 below — that hard-codes
-# fuse_allreduce_rms=false inside vLLM, which empirically reproduced the
-# Jun 24 (skyrl_v1) 2x speedup baseline and is what unblocks TP>1 + Hopper
-# from the FlashInfer-workspace assertion.
-#
-# Flow-style dict values need a space after every `:` — OmegaConf.from_cli
-# runs yaml.load on each rhs (Hydra's CLI parser is more lenient).
+# trainer.arctic_rl.arctic_inference_config (raw passthrough). See
+# run_bird_grpo_32b_32gpu.sh for the fuse_allreduce_rms rationale.
 USE_FCA=${USE_FCA:-True}
-SPEC_MODEL=${SPEC_MODEL:-/data-fast/qwen3-32b-bird-4096-3head}
+SPEC_MODEL=${SPEC_MODEL:-}
 NUM_SPEC_TOKENS=${NUM_SPEC_TOKENS:-3}
 
 AI_CFG_PARTS=()
 if [[ "${USE_FCA}" == "True" ]]; then
     AI_CFG_PARTS+=('forest_cascade_attn_configs: "{}"')
+    # Pin vLLM optimization to O1 so its compile pipeline hardcodes
+    # fuse_allreduce_rms=false. We *also* request it explicitly via
+    # compilation_config below, but in this environment the nested override
+    # from arctic_rl -> arctic_platform -> AsyncEngineArgs is being dropped
+    # before vLLM sees it (cudagraph_mode resolves to the default
+    # FULL_AND_PIECEWISE and fuse_allreduce_rms to True at engine init).
+    # Until that plumbing is fixed end-to-end, O1 is the reliable knob that
+    # avoids the FlashInfer-workspace assertion on TP>1 + Hopper. See
+    # docs/arctic_rl_speedup_investigation.md (TODO) for the open thread.
     AI_CFG_PARTS+=('optimization_level: 1')
     AI_CFG_PARTS+=('compilation_config: {cudagraph_mode: PIECEWISE, pass_config: {fuse_allreduce_rms: false}}')
 fi
