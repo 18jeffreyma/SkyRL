@@ -24,18 +24,19 @@
 
 set -euxo pipefail
 
-SKYRL_DIR=<PATH>/sky-checkouts/SkyRL
-DATA_DIR=${DATA_DIR:-"<PATH>/open-source-text2sql"}
-PYBIN=/home/yak/miniconda3/envs/skyrl_v1/bin/python
+SKYRL_DIR=${SKYRL_DIR:-$(cd "$(dirname "$0")"/../../.. && pwd)}
+DATA_DIR=${DATA_DIR:-"$HOME/data/bird"}
+PYBIN=${PYBIN:-python}
+ATTN_IMPL=${ATTN_IMPL:-flash_attention_2}
 
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
-export HF_HOME="${HF_HOME:-<PATH>}"
+export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export HF_HUB_OFFLINE=1
 export TORCH_COMPILE_DISABLE=1
 export VLLM_DISABLE_COMPILE_CACHE=1
-export VLLM_CACHE_ROOT=<PATH>/vllm
+export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$HOME/.cache/vllm}"
 export VLLM_LOGGING_LEVEL=INFO
 export ARCTIC_CUDA_IPC_LOW_MEM=0
 
@@ -43,8 +44,7 @@ export ARCTIC_CUDA_IPC_LOW_MEM=0
 export ARCTIC_WEIGHT_SYNC_STRICT_NAMES=0
 
 # WandB
-export WANDB_BASE_URL="${WANDB_BASE_URL:-https://<REDACTED_INTERNAL_URL>}"
-export WANDB_API_KEY="${WANDB_API_KEY:-<REDACTED_WANDB_KEY>}"
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_PROJECT="${WANDB_PROJECT:-arctic_rl_bird_sql}"
 export WANDB_DISABLE_CODE=True
 
@@ -102,7 +102,7 @@ cd "${SKYRL_DIR}"
     trainer.arctic_rl.log_prob_gpus=0 \
     trainer.arctic_rl.use_zorro=true \
     trainer.arctic_rl.use_liger=true \
-    trainer.arctic_rl.attn_implementation=flash_attention_3 \
+    trainer.arctic_rl.attn_implementation=${ATTN_IMPL} \
     trainer.arctic_rl.enable_gradient_checkpointing=true \
     trainer.arctic_rl.ulysses_sequence_parallel_size=2 \
     trainer.arctic_rl.logits_optimization=memory \

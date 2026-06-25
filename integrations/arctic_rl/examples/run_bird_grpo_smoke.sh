@@ -22,18 +22,18 @@
 
 set -euxo pipefail
 
-SKYRL_DIR=<PATH>/sky-checkouts/SkyRL
-DATA_DIR=${DATA_DIR:-"<PATH>/open-source-text2sql"}
-PYBIN=/home/yak/miniconda3/envs/skyrl_v1/bin/python
+SKYRL_DIR=${SKYRL_DIR:-$(cd "$(dirname "$0")"/../../.. && pwd)}
+DATA_DIR=${DATA_DIR:-"$HOME/data/bird"}
+PYBIN=${PYBIN:-python}
 
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
-export HF_HOME="${HF_HOME:-<PATH>}"
+export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export HF_HUB_OFFLINE=1
 export TORCH_COMPILE_DISABLE=1
 export VLLM_DISABLE_COMPILE_CACHE=1
-export VLLM_CACHE_ROOT=<PATH>/vllm
+export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$HOME/.cache/vllm}"
 export VLLM_LOGGING_LEVEL=WARNING  # quieter than full BIRD recipe for log readability
 export ARCTIC_CUDA_IPC_LOW_MEM=0
 export ARCTIC_WEIGHT_SYNC_STRICT_NAMES=0

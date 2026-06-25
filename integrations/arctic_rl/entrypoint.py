@@ -154,9 +154,9 @@ def main() -> None:
     # Forward ARCTIC_* env vars to Ray workers — moved here from core utils per
     # reviewer feedback (core stays integration-agnostic).
     env_vars.update({k: v for k, v in os.environ.items() if k.startswith("ARCTIC_")})
-    # Forward WANDB_* — prepare_runtime_environment only forwards
-    # WANDB_API_KEY; missing WANDB_BASE_URL sends local-wandb keys to
-    # api.wandb.ai (-> 401) when skyrl_entrypoint lands on a non-head worker.
+    # Forward all WANDB_* env vars to Ray workers so wandb can authenticate
+    # (skyrl's default propagation only forwards WANDB_API_KEY, which is
+    # insufficient when WANDB_BASE_URL points to a non-default endpoint).
     env_vars.update({k: v for k, v in os.environ.items() if k.startswith("WANDB_")})
     # Forward the SkyRL repo root on Ray workers' PYTHONPATH so they can import
     # ``integrations.arctic_rl.*`` when deserializing the skyrl_entrypoint task.

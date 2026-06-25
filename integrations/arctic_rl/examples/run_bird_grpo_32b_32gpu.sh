@@ -5,25 +5,27 @@
 # train_batch=128 prompts x n_samples=16 = 2048 trajectories/step.
 # Sibling: run_bird_grpo_32b_32gpu_fsdp.sh (same recipe, SkyRL FSDP-native).
 #
-# Prereq: 4-node ray cluster up on skyrl_v1 env; `ray status` shows 32/32 GPU.
+# Prereq: 4-node ray cluster up; `ray status` shows 32/32 GPU.
 
 set -euxo pipefail
 
-SKYRL_DIR=${SKYRL_DIR:-<PATH>/sky-checkouts/SkyRL}
-DATA_DIR=${DATA_DIR:-"<PATH>/open-source-text2sql"}
-PYBIN=${PYBIN:-/home/yak/miniconda3/envs/skyrl_v1/bin/python}
+SKYRL_DIR=${SKYRL_DIR:-$(cd "$(dirname "$0")"/../../.. && pwd)}
+DATA_DIR=${DATA_DIR:-"$HOME/data/bird"}
+PYBIN=${PYBIN:-python}
+# FlashAttention impl: flash_attention_2 (broadly available) or flash_attention_3
+# (Hopper-only, build from source from Dao-AILab/flash-attention hopper subdir).
+ATTN_IMPL=${ATTN_IMPL:-flash_attention_2}
 
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
-export HF_HOME="${HF_HOME:-<PATH>}"
+export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export TORCH_COMPILE_DISABLE=1
 export VLLM_DISABLE_COMPILE_CACHE=1
-export VLLM_CACHE_ROOT=<PATH>/vllm
+export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$HOME/.cache/vllm}"
 export VLLM_LOGGING_LEVEL=INFO
-# Match Tunji runtime behavior explicitly (his logs show vLLM selecting FLASH_ATTN).
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
 export ARCTIC_CUDA_IPC_LOW_MEM=0
 # 32B + tie_word_embeddings is False, but keep the bypass on — it's a no-op
@@ -32,15 +34,13 @@ export ARCTIC_WEIGHT_SYNC_STRICT_NAMES=0
 # verl 32B recipe ships this; helps with the 32B optimizer-state CPU offload churn.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# WandB — same project as Tunji's verl 32B recipe so the runs sit side-by-side
-# in skyrl_arctic_rl; override with PROJECT_NAME if you want to log to the
-# arctic_rl_bird_sql project instead.
-export WANDB_BASE_URL="${WANDB_BASE_URL:-https://<REDACTED_INTERNAL_URL>}"
-export WANDB_API_KEY="${WANDB_API_KEY:-<REDACTED_WANDB_KEY>}"
+# WandB — set WANDB_API_KEY in your environment to enable logging; override
+# WANDB_PROJECT to write to a different project.
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_PROJECT="${WANDB_PROJECT:-skyrl_arctic_rl}"
 export WANDB_DISABLE_CODE=True
 
-# Resolve local Qwen3-32B HF snapshot — same dance as Tunji's verl recipe.
+# Resolve local Qwen3-32B HF snapshot.
 HF_REPO="models--Qwen--Qwen3-32B"
 MODEL_REPO_DIR="${HF_HOME}/hub/${HF_REPO}"
 if [[ ! -f "${MODEL_REPO_DIR}/refs/main" ]]; then
@@ -120,7 +120,7 @@ cd "${SKYRL_DIR}"
     trainer.arctic_rl.log_prob_gpus=0 \
     trainer.arctic_rl.use_zorro=true \
     trainer.arctic_rl.use_liger=true \
-    trainer.arctic_rl.attn_implementation=flash_attention_3 \
+    trainer.arctic_rl.attn_implementation=${ATTN_IMPL} \
     trainer.arctic_rl.enable_gradient_checkpointing=true \
     trainer.arctic_rl.ulysses_sequence_parallel_size=1 \
     trainer.arctic_rl.logits_optimization=memory \

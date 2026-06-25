@@ -11,23 +11,23 @@
 #   - trainer.placement.colocate_all=true (native SkyRL colocation, not Arctic's)
 #   - No CUDA-IPC weight sync (uses SkyRL's native FSDP weight sync)
 #
-# Same prereqs: 4-node ray cluster on skyrl_v1 env up, HF Qwen3-32B downloaded.
+# Same prereqs: 4-node ray cluster up, HF Qwen3-32B downloaded.
 
 set -euxo pipefail
 
-SKYRL_DIR=${SKYRL_DIR:-<PATH>/sky-checkouts/SkyRL}
-DATA_DIR=${DATA_DIR:-"<PATH>/open-source-text2sql"}
-PYBIN=${PYBIN:-/home/yak/miniconda3/envs/skyrl_v1/bin/python}
+SKYRL_DIR=${SKYRL_DIR:-$(cd "$(dirname "$0")"/../../.. && pwd)}
+DATA_DIR=${DATA_DIR:-"$HOME/data/bird"}
+PYBIN=${PYBIN:-python}
 
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
-export HF_HOME="${HF_HOME:-<PATH>}"
+export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export TORCH_COMPILE_DISABLE=1
 export VLLM_DISABLE_COMPILE_CACHE=1
-export VLLM_CACHE_ROOT=<PATH>/vllm
+export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$HOME/.cache/vllm}"
 export VLLM_LOGGING_LEVEL=INFO
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -37,8 +37,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export SKYRL_USE_LIGER=0
 
 # Same W&B project as the arctic launcher so the two runs sit side-by-side.
-export WANDB_BASE_URL="${WANDB_BASE_URL:-https://<REDACTED_INTERNAL_URL>}"
-export WANDB_API_KEY="${WANDB_API_KEY:-<REDACTED_WANDB_KEY>}"
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_PROJECT="${WANDB_PROJECT:-skyrl_arctic_rl}"
 export WANDB_DISABLE_CODE=True
 

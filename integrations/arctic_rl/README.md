@@ -142,8 +142,3 @@ sub-namespace — both coexist at import time without collision.
    - Derives old log-probs by detaching (correct for `update_epochs_per_batch=1`)
    - Computes group-relative advantages from per-sequence rewards
    - Applies PPO clipped surrogate (eps_clip=0.2)
-
-## Companion PRs
-
-- **Client (this repo)**: [`arctic-rl-integration`](https://github.com/<REDACTED_INTERNAL_REPO>/compare/arctic-rl-integration) branch
-- **Server (ArcticTraining-dss)**: [`arctic-rl-grpo-loss`](https://github.com/snowflakedb/ArcticTraining/compare/arctic-rl-grpo-loss) branch — PR [#20](https://github.com/snowflakedb/ArcticTraining/pull/20)
