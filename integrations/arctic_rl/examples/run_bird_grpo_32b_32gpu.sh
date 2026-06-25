@@ -172,7 +172,7 @@ cd "${SKYRL_DIR}"
     trainer.algorithm.use_kl_in_reward=false \
     environment.env_class=bird \
     generator.n_samples_per_prompt=${N_SAMPLES} \
-    trainer.logger=wandb \
+    trainer.logger=${LOGGER:-wandb} \
     trainer.project_name="${WANDB_PROJECT}" \
     trainer.run_name="${EXPERIMENT_NAME}" \
     trainer.resume_mode=null \
