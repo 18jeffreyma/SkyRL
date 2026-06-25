@@ -45,11 +45,18 @@ Arctic RL Server (own Ray cluster, all GPUs)
 ### Install
 
 ```bash
-uv sync --extra fsdp --extra arctic-rl
+uv sync --extra arctic-rl
 ```
 
 This pulls in `arctic-platform` and `arctic-inference[vllm]` from public main
-branches, plus SkyRL's standard `fsdp` extras (vLLM, flash-attn, torch).
+branches (vLLM and torch are pulled transitively via `arctic-inference[vllm]`,
+SkyRL training core via `skyrl[skyrl-train]`).
+
+Add `--extra fsdp` only if you also want to run the SkyRL native FSDP backend
+side-by-side (e.g. for the comparison launcher
+`integrations/arctic_rl/examples/run_bird_grpo_32b_32gpu_fsdp.sh`). The two
+extras pin different vLLM versions, so `arctic-rl` alone is preferred for
+pure Arctic runs.
 
 ### Use with any SkyRL recipe
 
