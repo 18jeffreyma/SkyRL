@@ -156,6 +156,7 @@ arctic-rl = [
     "skyrl[skyrl-train]",
     "arctic-platform",
     "arctic-inference[vllm]",
+    "liger-kernel",
 ]
 
 dev = [
