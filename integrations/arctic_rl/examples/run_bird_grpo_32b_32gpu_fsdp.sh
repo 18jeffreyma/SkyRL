@@ -23,8 +23,8 @@ export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-0}"
 export TORCH_COMPILE_DISABLE=1
 export VLLM_DISABLE_COMPILE_CACHE=1
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$HOME/.cache/vllm}"
@@ -41,25 +41,12 @@ export WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_PROJECT="${WANDB_PROJECT:-skyrl_arctic_rl}"
 export WANDB_DISABLE_CODE=True
 
-# Resolve local Qwen3-32B HF snapshot — same dance as the arctic launcher.
-HF_REPO="models--Qwen--Qwen3-32B"
-MODEL_REPO_DIR="${HF_HOME}/hub/${HF_REPO}"
-if [[ ! -f "${MODEL_REPO_DIR}/refs/main" ]]; then
-    echo "ERROR: missing ${MODEL_REPO_DIR}/refs/main — download Qwen3-32B to HF_HOME first"
-    exit 1
-fi
-COMMIT=$(cat "${MODEL_REPO_DIR}/refs/main")
-SNAPSHOT_PATH="${MODEL_REPO_DIR}/snapshots/${COMMIT}"
-if [[ ! -d "${SNAPSHOT_PATH}" ]]; then
-    echo "ERROR: missing snapshot ${SNAPSHOT_PATH}"
-    exit 1
-fi
-echo "MODEL_SNAPSHOT=${SNAPSHOT_PATH}"
-MODEL="${SNAPSHOT_PATH}"
+MODEL="${MODEL:-Qwen/Qwen3-32B}"
+echo "MODEL=${MODEL}"
 
 RUN_TS=$(date -u +%Y%m%dT%H%M%SZ)
 EXPERIMENT_NAME=skyrl_bird_grpo_Qwen3-32B_fsdp_4node_${RUN_TS}
-CHECKPOINT_DIR=${CHECKPOINT_DIR:-/data/skyrl-runs/ckpts/${EXPERIMENT_NAME}}
+CHECKPOINT_DIR=${CHECKPOINT_DIR:-${HOME}/skyrl-runs/ckpts/${EXPERIMENT_NAME}}
 mkdir -p "${CHECKPOINT_DIR}"
 
 NUM_NODES=4

@@ -33,7 +33,7 @@ export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
-export HF_HUB_OFFLINE=1
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
 export TORCH_COMPILE_DISABLE=1
 export VLLM_DISABLE_COMPILE_CACHE=1
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$HOME/.cache/vllm}"
@@ -56,7 +56,7 @@ EXPERIMENT_NAME=skyrl_bird_grpo_${MODEL##*/}_4node_${RUN_TS}
 # vLLM InferenceWorkers across the 4 nodes mmap-read it. ``${HOME}/ckpts``
 # is local SSD per node, so workers can't see it -- use Lustre (/data) which
 # is mounted on all 4 nodes.
-CHECKPOINT_DIR=${CHECKPOINT_DIR:-/data/skyrl-runs/ckpts/${EXPERIMENT_NAME}}
+CHECKPOINT_DIR=${CHECKPOINT_DIR:-${HOME}/skyrl-runs/ckpts/${EXPERIMENT_NAME}}
 mkdir -p "${CHECKPOINT_DIR}"
 
 # 4 nodes × 8 H200s each.

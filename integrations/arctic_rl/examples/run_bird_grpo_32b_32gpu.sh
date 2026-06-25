@@ -20,8 +20,10 @@ export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
+# Default to ONLINE (auto-download missing models). Set OFFLINE=1 to disable
+# (e.g. on isolated clusters where the model is pre-staged in HF_HOME).
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-0}"
 export TORCH_COMPILE_DISABLE=1
 export VLLM_DISABLE_COMPILE_CACHE=1
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$HOME/.cache/vllm}"
@@ -40,27 +42,25 @@ export WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_PROJECT="${WANDB_PROJECT:-skyrl_arctic_rl}"
 export WANDB_DISABLE_CODE=True
 
-# Resolve local Qwen3-32B HF snapshot.
-HF_REPO="models--Qwen--Qwen3-32B"
-MODEL_REPO_DIR="${HF_HOME}/hub/${HF_REPO}"
-if [[ ! -f "${MODEL_REPO_DIR}/refs/main" ]]; then
-    echo "ERROR: missing ${MODEL_REPO_DIR}/refs/main — download Qwen3-32B to HF_HOME first"
-    exit 1
-fi
-COMMIT=$(cat "${MODEL_REPO_DIR}/refs/main")
-SNAPSHOT_PATH="${MODEL_REPO_DIR}/snapshots/${COMMIT}"
-if [[ ! -d "${SNAPSHOT_PATH}" ]]; then
-    echo "ERROR: missing snapshot ${SNAPSHOT_PATH}"
-    exit 1
-fi
-echo "MODEL_SNAPSHOT=${SNAPSHOT_PATH}"
-MODEL="${SNAPSHOT_PATH}"
+# Model: pass the HF id by default — transformers/vLLM auto-download to
+# HF_HOME on first use. If you've pre-staged the snapshot (multi-node
+# shared cache), set MODEL=<absolute snapshot path> to skip the hub lookup.
+MODEL="${MODEL:-Qwen/Qwen3-32B}"
+echo "MODEL=${MODEL}"
 
 RUN_TS=$(date -u +%Y%m%dT%H%M%SZ)
 EXPERIMENT_NAME=skyrl_bird_grpo_Qwen3-32B_arctic_zorro_4node_${RUN_TS}
-# Lustre — head writes weight_sync.pt, all 4 nodes mmap-read it (handoff §7).
-CHECKPOINT_DIR=${CHECKPOINT_DIR:-/data/skyrl-runs/ckpts/${EXPERIMENT_NAME}}
+# CHECKPOINT_DIR should be on a shared filesystem visible to all nodes
+# (head writes weight-sync tensor, all nodes mmap-read it).
+CHECKPOINT_DIR=${CHECKPOINT_DIR:-${HOME}/skyrl-runs/ckpts/${EXPERIMENT_NAME}}
 mkdir -p "${CHECKPOINT_DIR}"
+
+# BIRD-SQL parquets are bring-your-own (no public prep script).
+if [[ ! -f "${DATA_DIR}/train.parquet" || ! -f "${DATA_DIR}/val.parquet" ]]; then
+    echo "ERROR: BIRD-SQL parquets not found at ${DATA_DIR}/{train,val}.parquet"
+    echo "       Stage your own BIRD-SQL train/val parquets and set DATA_DIR."
+    exit 1
+fi
 
 NUM_NODES=4
 GPUS_PER_NODE=8

@@ -86,24 +86,12 @@ uv run ray start --address=<HEAD_IP>:6379 --num-gpus=8
 uv run ray status   # should show 32/32 GPUs across 4 nodes
 ```
 
-### 3. Prepare data and model
+### 3. Run
 
-Datasets are bring-your-own. For GSM8K, SkyRL ships a prep script:
-
-```bash
-uv run python examples/train/gsm8k/gsm8k_dataset.py --output_dir $HOME/data/gsm8k
-```
-
-For BIRD-SQL, provide your own `train.parquet` / `val.parquet` under
-`$DATA_DIR` (defaults to `$HOME/data/bird`).
-
-For the 32B example, pre-download the model snapshot:
-
-```bash
-uv run huggingface-cli download Qwen/Qwen3-32B  # populates $HF_HOME
-```
-
-### 4. Run
+Models auto-download to `$HF_HOME` on first use (Qwen3 weights are public,
+no HF auth required). GSM8K parquets auto-prep on first launch via SkyRL's
+bundled `gsm8k_dataset.py`. BIRD-SQL parquets are bring-your-own — point
+`$DATA_DIR` at a directory containing `train.parquet` and `val.parquet`.
 
 Use with any stock SkyRL recipe — append a single CLI flag:
 

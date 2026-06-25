@@ -27,6 +27,13 @@ export PYTHONUNBUFFERED=1
 : "${MODEL:="Qwen/Qwen3-0.6B"}"
 : "${LOGGER:="console"}"
 
+# Auto-prep GSM8K parquets if missing (uses SkyRL's bundled prep script).
+if [[ ! -f "${DATA_DIR}/train.parquet" || ! -f "${DATA_DIR}/validation.parquet" ]]; then
+    REPO_ROOT="$(cd "$(dirname "$0")"/../../.. && pwd)"
+    echo "GSM8K parquets not found in ${DATA_DIR} — running SkyRL prep script..."
+    python "${REPO_ROOT}/examples/train/gsm8k/gsm8k_dataset.py" --output_dir "${DATA_DIR}"
+fi
+
 python -m skyrl.train.entrypoints.main_base \
   data.train_data="['${DATA_DIR}/train.parquet']" \
   data.val_data="['${DATA_DIR}/validation.parquet']" \
