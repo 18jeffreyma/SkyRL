@@ -86,12 +86,42 @@ uv run ray start --address=<HEAD_IP>:6379 --num-gpus=8
 uv run ray status   # should show 32/32 GPUs across 4 nodes
 ```
 
-### 3. Run
+### 3. (Hopper only) Install FlashAttention-3
+
+The 32B BIRD recipe targets `flash_attention_3` for the 2× speedup vs FSDP.
+PyTorch publishes [official FA3 wheels](https://dev-discuss.pytorch.org/t/flash-attention-3-wheels/3322)
+ABI-stable for any Python ≥ 3.9, torch ≥ 2.9. Pick the index matching your
+CUDA build:
+
+```bash
+uv pip install flash-attn-3 --index-url https://download.pytorch.org/whl/cu128
+```
+
+(`cu126`, `cu130` indices also available.) Skip this if you're on FA2 — set
+`ATTN_IMPL=flash_attention_2` when launching.
+
+### 4. Prepare data
 
 Models auto-download to `$HF_HOME` on first use (Qwen3 weights are public,
 no HF auth required). GSM8K parquets auto-prep on first launch via SkyRL's
-bundled `gsm8k_dataset.py`. BIRD-SQL parquets are bring-your-own — point
-`$DATA_DIR` at a directory containing `train.parquet` and `val.parquet`.
+bundled `gsm8k_dataset.py`.
+
+For BIRD-SQL, run the bundled preprocessor against your raw BIRD SQLite
+dump (downloadable from <https://bird-bench.github.io/>):
+
+```bash
+python integrations/arctic_rl/envs/preprocess_bird.py \
+    --bird_dir   /path/to/raw/bird \
+    --output_dir $HOME/data/bird \
+    --max_tokens 16384 \
+    --tokenizer  Qwen/Qwen3-1.7B
+```
+
+This writes `train.parquet` and `val.parquet` to `$DATA_DIR` in the
+verl-compatible format the launcher expects (`--help` for the full set of
+flags, including Spider / GretelAI sources).
+
+### 5. Run
 
 Use with any stock SkyRL recipe — append a single CLI flag:
 
@@ -159,7 +189,10 @@ integrations/arctic_rl/                # importable as integrations.arctic_rl
 ├── generator.py                      # ArcticGenerator: routes generation to server vLLM
 ├── config.py                         # ArcticRLTrainerConfig + build_rl_config
 ├── entrypoint.py                     # dispatched here from main_base
-├── envs/                             # bird env registration
+├── envs/
+│   ├── bird.py                       # skyrl-gym BIRD SQL env
+│   ├── bird_reward.py                # vendored V6b SQL reward fn (verl PR #6 parity)
+│   └── preprocess_bird.py            # vendored BIRD parquet preprocessor
 └── examples/
     └── run_*.sh                      # launchers (call main_base with override_entrypoint)
 ```
