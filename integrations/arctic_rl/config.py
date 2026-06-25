@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 from arctic_platform.rl import ArcticRLClientConfig
+from omegaconf import OmegaConf
 from skyrl.train.config import SkyRLTrainConfig
 from skyrl.train.config.config import BaseConfig, TrainerConfig, make_config
 
@@ -478,11 +479,17 @@ def build_rl_config(cfg: SkyRLTrainConfig) -> ArcticRLClientConfig:
         ds_config=ds_config,
         ds_worker_config=ds_worker_config,
         training_config=training_config,
-        arctic_inference_config=(
-            dict(arl.arctic_inference_config or {})
-            if arl.use_arctic_inference
-            else None
-        ),
+        # Deep-convert OmegaConf containers to plain Python so that vLLM's
+        # ``AsyncEngineArgs.__post_init__`` recognizes nested overrides
+        # (``compilation_config``, ``speculative_config``, ...). The
+        # ``OmegaConf.create(x)`` round-trip normalizes both plain ``dict``
+        # and ``DictConfig`` inputs, matching the ``OmegaConf.to_container``
+        # idiom used in ``arctic-verl/verl/workers/remote_client/arctic_rl.py``.
+        arctic_inference_config=OmegaConf.to_container(
+            OmegaConf.create(arl.arctic_inference_config), resolve=True,
+        )
+        if arl.use_arctic_inference and arl.arctic_inference_config is not None
+        else None,
         full_determinism=bool(arl.determinism_full),
         seed=int(arl.determinism_seed),
         startup_timeout=arl.startup_timeout,

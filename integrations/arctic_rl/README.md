@@ -65,6 +65,14 @@ Add `--extra fsdp` *only* if you also want to run the SkyRL native FSDP
 backend side-by-side (the two extras pin different vLLM versions, so
 `arctic-rl` alone is preferred for pure Arctic runs).
 
+SkyRL's base `transformers` pin (`>=5.0.0,<=5.3.0`, for the megatron
+backend) conflicts with vLLM 0.18 + arctic-platform, so after `uv sync`
+force the older line:
+
+```bash
+uv pip install --upgrade 'transformers>=4.57,<5'
+```
+
 ### 2. Start a Ray cluster
 
 Single-node (8 GPUs):
