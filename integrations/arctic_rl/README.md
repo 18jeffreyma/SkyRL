@@ -42,47 +42,96 @@ Arctic RL Server (own Ray cluster, all GPUs)
 
 ## Quick Start
 
-### Install
+### Prerequisites
+
+- Linux x86_64, NVIDIA GPU with CUDA 12.8 driver (Hopper recommended).
+- [`uv`](https://docs.astral.sh/uv/) installed
+  (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
+
+### 1. Clone and install
 
 ```bash
+git clone https://github.com/Snowflake-AI-Research/SkyRL.git
+cd SkyRL
 uv sync --extra arctic-rl
 ```
 
-This pulls in `arctic-platform` and `arctic-inference[vllm]` from public main
-branches (vLLM and torch are pulled transitively via `arctic-inference[vllm]`,
-SkyRL training core via `skyrl[skyrl-train]`).
+The `arctic-rl` extra pulls in `arctic-platform` and `arctic-inference[vllm]`
+from their public `main` branches; vLLM and torch arrive transitively via
+`arctic-inference[vllm]`, SkyRL training core via `skyrl[skyrl-train]`. No
+manual installs of arctic-platform / arctic-inference / vLLM / torch needed.
 
-Add `--extra fsdp` only if you also want to run the SkyRL native FSDP backend
-side-by-side (e.g. for the comparison launcher
-`integrations/arctic_rl/examples/run_bird_grpo_32b_32gpu_fsdp.sh`). The two
-extras pin different vLLM versions, so `arctic-rl` alone is preferred for
-pure Arctic runs.
+Add `--extra fsdp` *only* if you also want to run the SkyRL native FSDP
+backend side-by-side (the two extras pin different vLLM versions, so
+`arctic-rl` alone is preferred for pure Arctic runs).
 
-### Use with any SkyRL recipe
+### 2. Start a Ray cluster
 
-Append a single CLI flag to **any** stock SkyRL recipe to route training
-through Arctic RL:
+Single-node (8 GPUs):
 
 ```bash
-bash examples/<your-recipe>/run.sh \
-    trainer.override_entrypoint=integrations.arctic_rl.entrypoint
+uv run ray start --head --num-gpus=8
 ```
 
-That's it. Optional Arctic-specific knobs go under `trainer.arctic_rl.*`
-(e.g. `trainer.arctic_rl.colocate=true`, `trainer.arctic_rl.zero_stage=3`).
-The integration's entrypoint auto-fills sensible defaults if you set none.
-
-### Self-contained examples
+Multi-node (e.g. 4 × 8 H200):
 
 ```bash
-# GSM8K, 4 H200s
-bash integrations/arctic_rl/examples/run_gsm8k_grpo_4gpu.sh
+# On the head node:
+uv run ray start --head --port=6379 --num-gpus=8
 
-# BIRD-SQL, Qwen3-32B, 32 H200s (4 nodes)
-bash integrations/arctic_rl/examples/run_bird_grpo_32b_32gpu.sh
+# On each worker node (same SkyRL checkout + same env installed):
+uv run ray start --address=<HEAD_IP>:6379 --num-gpus=8
+
+# Confirm:
+uv run ray status   # should show 32/32 GPUs across 4 nodes
 ```
 
-Set `LOGGER=wandb` for W&B logging (default is console).
+### 3. Prepare data and model
+
+Datasets are bring-your-own. For GSM8K, SkyRL ships a prep script:
+
+```bash
+uv run python examples/train/gsm8k/gsm8k_dataset.py --output_dir $HOME/data/gsm8k
+```
+
+For BIRD-SQL, provide your own `train.parquet` / `val.parquet` under
+`$DATA_DIR` (defaults to `$HOME/data/bird`).
+
+For the 32B example, pre-download the model snapshot:
+
+```bash
+uv run huggingface-cli download Qwen/Qwen3-32B  # populates $HF_HOME
+```
+
+### 4. Run
+
+Use with any stock SkyRL recipe — append a single CLI flag:
+
+```bash
+uv run -m skyrl.train.entrypoints.main_base \
+    trainer.override_entrypoint=integrations.arctic_rl.entrypoint \
+    <... your existing recipe overrides ...>
+```
+
+Arctic-specific knobs go under `trainer.arctic_rl.*` (e.g.
+`trainer.arctic_rl.colocate=true`, `trainer.arctic_rl.zero_stage=3`); the
+entrypoint auto-fills sensible defaults if you set none.
+
+Or invoke one of the provided launchers:
+
+```bash
+# GSM8K, 4 H200s (single node):
+DATA_DIR=$HOME/data/gsm8k LOGGER=console \
+    bash integrations/arctic_rl/examples/run_gsm8k_grpo_4gpu.sh
+
+# BIRD-SQL, Qwen3-32B, 32 H200s (4 nodes):
+DATA_DIR=$HOME/data/bird HF_HOME=$HOME/.cache/huggingface LOGGER=console \
+    bash integrations/arctic_rl/examples/run_bird_grpo_32b_32gpu.sh
+```
+
+Launchers default to `LOGGER=wandb` (parity with the original recipes); pass
+`LOGGER=console` for no-credentials smoke runs. When `LOGGER=wandb`, set
+`WANDB_API_KEY` in your environment.
 
 ## Configuration
 
