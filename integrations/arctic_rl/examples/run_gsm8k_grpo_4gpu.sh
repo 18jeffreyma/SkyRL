@@ -31,7 +31,6 @@ python -m skyrl.train.entrypoints.main_base \
   data.train_data="['${DATA_DIR}/train.parquet']" \
   data.val_data="['${DATA_DIR}/validation.parquet']" \
   trainer.override_entrypoint=integrations.arctic_rl.entrypoint \
-  trainer.arctic_rl={} \
   trainer.algorithm.advantage_estimator=grpo \
   trainer.policy.model.path="${MODEL}" \
   trainer.placement.colocate_all=false \

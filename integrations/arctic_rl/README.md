@@ -42,74 +42,50 @@ Arctic RL Server (own Ray cluster, all GPUs)
 
 ## Quick Start
 
-### Prerequisites
-
-- 7+ GPUs (H200/A100 recommended)
-- `arctic-skyrl` repo (this repo, `arctic-rl-integration` branch)
-- `ArcticTraining-dss` repo (`arctic-rl-grpo-loss` branch)
-- `arctic-inference` package installed
-- GSM8K dataset prepared
-
-### Step 1: Clone repos
+### Install
 
 ```bash
-# Clone arctic-skyrl (client)
-git clone https://github.com/<REDACTED_INTERNAL_REPO>.git
-cd arctic-skyrl
-git checkout arctic-rl-integration
-pip install -e ".[arctic-rl]"
-
-# Clone ArcticTraining (server) — in a separate directory
-cd ..
-git clone https://github.com/snowflakedb/ArcticTraining.git
-cd ArcticTraining
-git checkout arctic-rl-grpo-loss
-pip install --no-deps -e .
+uv sync --extra fsdp --extra arctic-rl
 ```
 
-### Step 2: Prepare GSM8K dataset
+This pulls in `arctic-platform` and `arctic-inference[vllm]` from public main
+branches, plus SkyRL's standard `fsdp` extras (vLLM, flash-attn, torch).
+
+### Use with any SkyRL recipe
+
+Append a single CLI flag to **any** stock SkyRL recipe to route training
+through Arctic RL:
 
 ```bash
-cd arctic-skyrl
-python examples/train/gsm8k/gsm8k_dataset.py --output_dir $HOME/data/gsm8k
+bash examples/<your-recipe>/run.sh \
+    trainer.override_entrypoint=integrations.arctic_rl.entrypoint
 ```
 
-### Step 3: Run training
+That's it. Optional Arctic-specific knobs go under `trainer.arctic_rl.*`
+(e.g. `trainer.arctic_rl.colocate=true`, `trainer.arctic_rl.zero_stage=3`).
+The integration's entrypoint auto-fills sensible defaults if you set none.
+
+### Self-contained examples
 
 ```bash
-bash examples/train_integrations/arctic_rl/run_gsm8k_grpo_arctic.sh
+# GSM8K, 4 H200s
+bash integrations/arctic_rl/examples/run_gsm8k_grpo_4gpu.sh
+
+# BIRD-SQL, Qwen3-32B, 32 H200s (4 nodes)
+bash integrations/arctic_rl/examples/run_bird_grpo_32b_32gpu.sh
 ```
 
-This will:
-1. Start an Arctic RL server (DeepSpeed + ArcticInference) on localhost
-2. Initialize a CPU-only SkyRL client via Ray
-3. Run GRPO training on GSM8K with eval every 5 steps
-4. Log to console (set `LOGGER=wandb` for W&B)
-
-### Step 4: Monitor
-
-```bash
-# Watch live metrics
-tail -f /tmp/arctic_rl_training.log | grep -E "avg_raw_reward|global_step|pass_at_1"
-
-# Check GPU usage
-nvidia-smi
-```
+Set `LOGGER=wandb` for W&B logging (default is console).
 
 ## Configuration
 
-### GPU Allocation (environment variables)
+### GPU Allocation
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ARCTIC_TRAINING_GPUS` | 4 | DeepSpeed training workers (DP) |
-| `ARCTIC_SAMPLE_GPUS` | 2 | ArcticInference (vLLM) sampling replicas |
-| `ARCTIC_LOG_PROB_GPUS` | 1 | ArcticInference (vLLM) log-prob engine |
-| `ARCTIC_SERVER_PORT` | 7000 | Server HTTP port |
-| `ARCTIC_SERVER_LOGS` | 0 | Set to 1 for verbose server output |
-| `ARCTIC_STARTUP_TIMEOUT` | 600 | Server startup timeout (seconds) |
-
-Total GPUs needed: `TRAINING + SAMPLE + LOG_PROB` (default: 7).
+GPU layout is derived from standard SkyRL knobs:
+- Training GPUs: `trainer.placement.policy_num_gpus_per_node * trainer.placement.policy_num_nodes`
+- Sampling GPUs: `generator.inference_engine.num_engines * generator.inference_engine.tensor_parallel_size`
+- Log-prob GPUs: `trainer.arctic_rl.log_prob_gpus` (default: 0 — log-probs colocate with sampling vLLM)
+- Colocation between training and sampling: `trainer.arctic_rl.colocate` (default: false)
 
 ### Key Training Parameters
 

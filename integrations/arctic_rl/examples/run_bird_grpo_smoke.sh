@@ -66,7 +66,6 @@ cd "${SKYRL_DIR}"
 
 "${PYBIN}" -m skyrl.train.entrypoints.main_base \
     trainer.override_entrypoint=integrations.arctic_rl.entrypoint \
-    trainer.arctic_rl={} \
     trainer.arctic_rl.colocate=true \
     trainer.arctic_rl.zero_stage=3 \
     trainer.arctic_rl.offload_optimizer=true \

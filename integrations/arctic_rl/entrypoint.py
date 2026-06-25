@@ -121,9 +121,16 @@ def skyrl_entrypoint(
 def main() -> None:
     """Arctic RL entrypoint. Dispatched here by ``main_base`` when
     ``trainer.override_entrypoint=integrations.arctic_rl.entrypoint`` is set on
-    the CLI. Parses with ``ArcticSkyRLConfig`` (core config + ``trainer.arctic_rl``)."""
-    from .config import ArcticSkyRLConfig
+    the CLI. Parses with ``ArcticSkyRLConfig`` (core config + ``trainer.arctic_rl``).
+
+    If the user didn't pass ``trainer.arctic_rl=`` overrides, defaults to an
+    empty ``ArcticRLTrainerConfig()`` (=Arctic with default settings) so the
+    user only needs the one ``override_entrypoint`` flag to opt into Arctic.
+    """
+    from .config import ArcticRLTrainerConfig, ArcticSkyRLConfig
     cfg = ArcticSkyRLConfig.from_cli_overrides(sys.argv[1:])
+    if cfg.trainer.arctic_rl is None:
+        cfg.trainer.arctic_rl = ArcticRLTrainerConfig()
     validate_cfg(cfg)
 
     rl_config = build_rl_config(cfg)
