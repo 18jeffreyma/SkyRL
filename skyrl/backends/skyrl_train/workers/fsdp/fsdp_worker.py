@@ -1,4 +1,5 @@
 import io
+import os
 from typing import TYPE_CHECKING
 
 import ray
@@ -184,6 +185,9 @@ class FSDPPolicyWorkerBase(PolicyWorkerBase):
             use_meta_tensor=not model_config.tie_word_embeddings, mesh=self.strategy.device_mesh
         )
 
+        # SKYRL_USE_LIGER=1 -> Liger fused linear-CE (avoids full LM-head
+        # logits materialization for large-vocab + long-context training).
+        _use_liger = os.environ.get("SKYRL_USE_LIGER", "0") == "1"
         wrapped_model = HFModelWrapper(
             model_path,
             use_flash_attention_2=self.cfg.flash_attn,
@@ -202,6 +206,7 @@ class FSDPPolicyWorkerBase(PolicyWorkerBase):
             model_config_kwargs=self.cfg.policy.model_config_kwargs,
             meta_init=use_meta,
             language_model_only=self.cfg.policy.language_model_only,
+            use_liger_kernel=_use_liger,
         )
         self._seq_parallel_monkey_patch(model=wrapped_model.model)
 
